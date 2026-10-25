@@ -24,6 +24,9 @@ type Env struct {
 	ConnectedClients func() int
 	// StartTime is when the server started, for INFO's uptime.
 	StartTime time.Time
+	// Shutdown asks the server to shut down, saving first if save is true.
+	// It must not block. Nil means SHUTDOWN is not available.
+	Shutdown func(save bool)
 }
 
 // Param is one setting reported by CONFIG GET.
@@ -43,6 +46,9 @@ type Context struct {
 	Store *store.Store
 	// Env is the server around the store. It is shared; don't change it.
 	Env *Env
+	// CloseConn tells the server to close this connection after the
+	// current reply has been sent.
+	CloseConn bool
 
 	table *Table
 }
@@ -99,6 +105,9 @@ func NewTable(st *store.Store, env Env) *Table {
 	t.add("DBSIZE", 1, dbsize)
 	t.add("FLUSHALL", -1, flushall)
 	t.add("INFO", -1, info)
+	t.add("BGSAVE", 1, bgsave)
+	t.add("LASTSAVE", 1, lastsave)
+	t.add("SHUTDOWN", -1, shutdown)
 	return t
 }
 

@@ -12,14 +12,15 @@ type Item struct {
 	ExpireAt time.Time
 }
 
-// Snapshot returns a copy of every live key. It holds the read lock only
-// while copying; the byte slices are shared, which is safe because stored
-// bytes are never changed in place.
-func (s *Store) Snapshot() []Item {
+// Snapshot returns a copy of every live key, and the change count it
+// matches (see Changes). It holds the read lock only while copying; the
+// byte slices are shared, which is safe because stored bytes are never
+// changed in place.
+func (s *Store) Snapshot() (items []Item, changes uint64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	now := s.now()
-	items := make([]Item, 0, len(s.data))
+	items = make([]Item, 0, len(s.data))
 	for k, e := range s.data {
 		if e.expired(now) {
 			continue
@@ -32,7 +33,7 @@ func (s *Store) Snapshot() []Item {
 		}
 		items = append(items, it)
 	}
-	return items
+	return items, s.changes
 }
 
 // Restore replaces the whole database with items, skipping any whose

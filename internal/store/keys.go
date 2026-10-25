@@ -51,6 +51,9 @@ func (s *Store) Del(keys ...string) int {
 		}
 		s.remove(k)
 	}
+	if n > 0 {
+		s.changes++
+	}
 	return n
 }
 
@@ -82,6 +85,7 @@ func (s *Store) IncrBy(key string, delta int64) (int64, error) {
 	}
 	cur += delta
 	s.put(key, &Entry{Kind: KindString, Str: strconv.AppendInt(nil, cur, 10), ExpireAt: expireAt})
+	s.changes++
 	return cur, nil
 }
 
@@ -136,5 +140,6 @@ func (s *Store) Push(key string, vals [][]byte, front bool) (int, error) {
 			e.List.PushBack(v)
 		}
 	}
+	s.changes++
 	return e.List.Len(), nil
 }

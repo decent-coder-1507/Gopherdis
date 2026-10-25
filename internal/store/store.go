@@ -52,6 +52,10 @@ type Store struct {
 	// sample them without walking the whole database.
 	expires map[string]struct{}
 	now     func() time.Time
+	// changes counts writes since the store was created. The auto-save
+	// compares it with the count at the last save to know if anything
+	// changed. Guarded by mu.
+	changes uint64
 }
 
 // New returns an empty store that uses the real clock.
@@ -144,7 +148,16 @@ func (s *Store) Set(key string, val []byte, expireAt time.Time) {
 	e := &Entry{Kind: KindString, Str: clone(val), ExpireAt: expireAt} // copy before taking the lock
 	s.mu.Lock()
 	s.put(key, e)
+	s.changes++
 	s.mu.Unlock()
+}
+
+// Changes returns how many writes the store has seen. Only differences
+// between two calls mean anything.
+func (s *Store) Changes() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.changes
 }
 
 // clone copies b, keeping an empty value non-nil so it stays distinct from "missing".

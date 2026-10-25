@@ -2,6 +2,7 @@ package server
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -104,6 +105,43 @@ func (s *Server) ConnectedClients() int {
 	return len(s.conns)
 }
 
+// Shutdown stops the server gently: it stops accepting clients, lets every
+// client finish the command it is running (and any commands it already sent),
+// then closes its connection. Idle clients are woken up by moving their read
+// deadline to now. If ctx ends first, the remaining connections are closed
+// at once and ctx.Err() is returned.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		if s.ln != nil {
+			s.ln.Close()
+		}
+	}
+	for c := range s.conns {
+		c.SetReadDeadline(time.Now())
+	}
+	s.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		s.mu.Lock()
+		for c := range s.conns {
+			c.Close()
+		}
+		s.mu.Unlock()
+		<-done
+		return ctx.Err()
+	}
+}
+
 // Close stops accepting clients, closes every open connection and waits
 // for the client goroutines to end.
 func (s *Server) Close() error {
@@ -179,6 +217,10 @@ func (s *Server) handle(conn net.Conn) {
 			continue
 		}
 		s.cmds.Run(ctx, args)
+		if ctx.CloseConn {
+			w.Flush()
+			return
+		}
 		if r.Buffered() > 0 {
 			continue
 		}

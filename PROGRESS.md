@@ -579,3 +579,67 @@ Problems / decisions:
 - `CONFIG GET requirepass` returns the password, as real Redis does. After Step 12 only a client
   that has already authenticated can run CONFIG.
 - `last_save_time` starts as the server start time, like Redis' `LASTSAVE`, until the first save.
+
+Commit: a8630b8 "Step 10: settings, logging, INFO"
+
+## Step 11: Graceful shutdown and auto-save
+Status: DONE
+
+What I built:
+- Signals: `main` catches SIGINT (Ctrl+C) and SIGTERM. `run()` then: stops accepting clients,
+  lets every client finish the command it's running and any commands it had already sent
+  (idle clients are woken by moving their read deadline to now), stops the cleanup and
+  auto-save jobs, saves, closes connections, logs `shutdown complete`, exits 0. A second
+  Ctrl+C during shutdown kills the process straight away, the usual escape hatch.
+- `SHUTDOWN [NOSAVE|SAVE]`: asks `run()` to do the same; NOSAVE skips the save. As in Redis,
+  there's no reply: the connection is closed, and commands pipelined after SHUTDOWN don't run.
+- Time limit: clients get up to 5 s to finish, leaving the rest of the 10 s for the save. If the
+  whole shutdown passes 10 s, it logs a warning and exits anyway (code 1). The dump file is
+  replaced atomically, so exiting in the middle of a save leaves the previous file intact.
+- Change counter in the store: every successful write (SET, DEL that deleted something, INCR/DECR,
+  LPUSH/RPUSH, EXPIRE, PERSIST, FLUSHALL) adds one. A snapshot records the count it matches, so
+  `Saver.Dirty()` knows exactly whether anything changed since the last good save. Loading
+  a file counts as saved.
+- Auto-save: every `--save-interval` (default 60s, 0 = off), if dirty, a background save.
+- `BGSAVE` -> `+Background saving started`; `LASTSAVE` -> Unix time of the last good save.
+  Only one save runs at a time (a one-slot channel): BGSAVE or SAVE while a save is running
+  gets `-ERR Background save already in progress`; the shutdown save waits its turn instead.
+
+Files changed:
+- `cmd/gopherdis/main.go` (signals, `run`, `shutdown`), `internal/server/server.go` (`Shutdown`,
+  `CloseConn`), `internal/persist/persist.go` (Saver: one save at a time, `BackgroundSave`, `SaveWait`,
+  `Dirty`, `StartAutoSave`), `internal/store/*.go` (change counter), `internal/commands/{commands,persist}.go`
+- tests: `cmd/gopherdis/main_test.go`, `internal/persist/saver_test.go`, `internal/server/server_test.go`,
+  `internal/commands/admin_test.go`, `tests/persist_test.go`, small updates for the new `Snapshot` signature
+
+Tests:
+- Added: shutdown saves (SHUTDOWN, and SIGINT and SIGTERM through `run`) and the data is back after a
+  restart; SHUTDOWN NOSAVE writes nothing; the real binary built and stopped with real SIGINT and
+  SIGTERM (exit 0, dump written); auto-save writes nothing while unchanged and saves after a SET;
+  dirty tracking (reads and failed writes don't count); two BGSAVEs at once -> the second is refused
+  (in the saver with a held save, and over the network with a pipeline); SAVE refused during
+  BGSAVE; SaveWait waits for the running save; the store keeps answering while a save is held
+  half-way; a client SETs during a BGSAVE of 50,000 keys; Server.Shutdown wakes idle clients at
+  once, answers commands already sent, refuses new clients; SHUTDOWN closes with no reply and the
+  pipelined PING after it doesn't run; LASTSAVE moves after a save and not after a failed one.
+- Result of `go test -race ./...`: all passing.
+
+Manual checks (port 6400):
+- `SET x 1`, Ctrl+C (SIGINT) -> exit 0, log `shutting down reason="signal interrupt"`, `save finished keys=1`,
+  `shutdown complete`; restart -> `data loaded keys=1`, `GET x` -> `1`
+- `SET y 2`, SIGTERM -> exit 0; restart, `GET y` -> `2`
+- `SET z 3`, `SHUTDOWN` -> exit 0; restart, `GET z` -> `3`
+- `SET w 4`, `SHUTDOWN NOSAVE` -> exit 0, no save logged; restart, `EXISTS w` -> `0`
+- `BGSAVE` -> `Background saving started`; `LASTSAVE` -> `1792947026`
+
+"Done when" checklist:
+- [x] Ctrl+C, SIGTERM and SHUTDOWN all save and exit cleanly.
+- [x] Auto-save and BGSAVE work, and tests pass with `-race`.
+- [x] Commit: `Step 11: graceful shutdown and auto-save`.
+
+Problems / decisions:
+- If the shutdown save fails (disk full, folder gone), Gopherdis logs the error and exits with
+  code 1. Real Redis refuses to stop in that case, but by then we have already stopped serving
+  clients. Exit code 1 makes a supervisor (systemd, Docker) notice.
+- On Windows only Ctrl+C can be caught; SIGTERM isn't something Windows sends. The process test
+  skips itself there. Everything here was tested on Linux (WSL).

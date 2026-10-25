@@ -39,6 +39,7 @@ func (s *Store) Expire(key string, at time.Time) bool {
 	}
 	if !now.Before(at) {
 		s.remove(key)
+		s.changes++
 		return true
 	}
 	// Entries are replaced, not edited, so a reader holding the old entry
@@ -46,6 +47,7 @@ func (s *Store) Expire(key string, at time.Time) bool {
 	updated := *e
 	updated.ExpireAt = at
 	s.put(key, &updated)
+	s.changes++
 	return true
 }
 
@@ -65,6 +67,7 @@ func (s *Store) Persist(key string) bool {
 	updated := *e
 	updated.ExpireAt = time.Time{}
 	s.put(key, &updated)
+	s.changes++
 	return true
 }
 
@@ -175,5 +178,6 @@ func (s *Store) Flush() {
 	s.mu.Lock()
 	s.data = make(map[string]*Entry)
 	s.expires = make(map[string]struct{})
+	s.changes++
 	s.mu.Unlock()
 }

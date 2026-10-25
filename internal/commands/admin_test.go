@@ -1,12 +1,14 @@
 package commands
 
 import (
+	"bytes"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"gopherdis/internal/persist"
+	"gopherdis/internal/resp"
 	"gopherdis/internal/store"
 )
 
@@ -67,4 +69,70 @@ func TestInfo(t *testing.T) {
 	if got := run(t, tbl, "INFO server"); !strings.Contains(got, "gopherdis_version") {
 		t.Errorf("INFO server: %q", got)
 	}
+}
+
+func TestBgsaveLastsave(t *testing.T) {
+	tbl := NewTable(store.New(), Env{StartTime: time.Unix(1700000000, 0)})
+	if got := run(t, tbl, "BGSAVE"); got != "-ERR saving is not configured\r\n" {
+		t.Errorf("BGSAVE without saver: %q", got)
+	}
+	if got := run(t, tbl, "LASTSAVE"); got != ":1700000000\r\n" {
+		t.Errorf("LASTSAVE without saver: %q", got)
+	}
+
+	st := store.New()
+	saver := persist.NewSaver(t.TempDir()+"/dump.gob", st)
+	tbl = NewTable(st, Env{Saver: saver})
+	run(t, tbl, "SET a 1")
+	if got := run(t, tbl, "BGSAVE"); got != "+Background saving started\r\n" {
+		t.Fatalf("BGSAVE: %q", got)
+	}
+	saver.Wait()
+	want := ":" + strconv.FormatInt(saver.LastSave().Unix(), 10) + "\r\n"
+	if got := run(t, tbl, "LASTSAVE"); got != want {
+		t.Errorf("LASTSAVE = %q, want %q", got, want)
+	}
+	if got := run(t, tbl, "BGSAVE now"); got != "-ERR wrong number of arguments for 'bgsave' command\r\n" {
+		t.Errorf("BGSAVE now: %q", got)
+	}
+}
+
+func TestShutdownCommand(t *testing.T) {
+	var requests []bool
+	tbl := NewTable(store.New(), Env{Shutdown: func(save bool) { requests = append(requests, save) }})
+
+	for _, tc := range []struct {
+		in   string
+		save bool
+	}{{"SHUTDOWN", true}, {"shutdown nosave", false}, {"SHUTDOWN SAVE", true}} {
+		var buf bytes.Buffer
+		w := resp.NewWriter(&buf)
+		ctx := tbl.NewContext(w)
+		tbl.Run(ctx, splitArgs(tc.in))
+		w.Flush()
+		if buf.Len() != 0 {
+			t.Errorf("%s replied %q; SHUTDOWN sends no reply", tc.in, buf.String())
+		}
+		if !ctx.CloseConn {
+			t.Errorf("%s didn't ask for the connection to be closed", tc.in)
+		}
+		if got := requests[len(requests)-1]; got != tc.save {
+			t.Errorf("%s asked for save=%v, want %v", tc.in, got, tc.save)
+		}
+	}
+
+	if got := run(t, tbl, "SHUTDOWN NOW"); got != "-ERR syntax error\r\n" {
+		t.Errorf("SHUTDOWN NOW: %q", got)
+	}
+	if got := run(t, NewTable(store.New(), Env{}), "SHUTDOWN"); got != "-ERR SHUTDOWN is not available\r\n" {
+		t.Errorf("SHUTDOWN without a server: %q", got)
+	}
+}
+
+func splitArgs(line string) [][]byte {
+	var args [][]byte
+	for _, f := range strings.Fields(line) {
+		args = append(args, []byte(f))
+	}
+	return args
 }

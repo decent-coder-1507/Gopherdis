@@ -13,7 +13,7 @@ func TestSnapshotIsACopy(t *testing.T) {
 	s.Push("l", vals("x", "y"), false)
 	clock.Advance(time.Second)
 
-	snap := s.Snapshot()
+	snap, _ := s.Snapshot()
 	if len(snap) != 2 {
 		t.Fatalf("snapshot has %d items, want 2 (expired key left out)", len(snap))
 	}

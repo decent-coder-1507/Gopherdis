@@ -13,6 +13,12 @@ import (
 	"gopherdis/internal/store"
 )
 
+// sortedSnapshot returns st's keys sorted by name.
+func sortedSnapshot(st *store.Store) []store.Item {
+	items, _ := st.Snapshot()
+	return sorted(items)
+}
+
 func sorted(items []store.Item) []store.Item {
 	sort.Slice(items, func(i, j int) bool { return items[i].Key < items[j].Key })
 	return items
@@ -43,7 +49,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 		t.Fatalf("Load: %d keys, found=%v, %v", n, found, err)
 	}
 
-	want, got := sorted(src.Snapshot()), sorted(dst.Snapshot())
+	want, got := sortedSnapshot(src), sortedSnapshot(dst)
 	if len(got) != len(want) {
 		t.Fatalf("got %d keys, want %d", len(got), len(want))
 	}
