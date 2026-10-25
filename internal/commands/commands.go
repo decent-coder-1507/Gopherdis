@@ -58,6 +58,16 @@ func NewTable(st *store.Store) *Table {
 	t.add("LPUSH", -3, lpush)
 	t.add("RPUSH", -3, rpush)
 	t.add("SAVE", 1, save)
+	t.add("TTL", 2, ttl)
+	t.add("PTTL", 2, pttl)
+	t.add("EXPIRE", 3, expire)
+	t.add("PERSIST", 2, persistKey)
+	t.add("KEYS", 2, keys)
+	t.add("LRANGE", 4, lrange)
+	t.add("LLEN", 2, llen)
+	t.add("MGET", -2, mget)
+	t.add("DBSIZE", 1, dbsize)
+	t.add("FLUSHALL", -1, flushall)
 	return t
 }
 
@@ -114,6 +124,9 @@ func (t *Table) lookup(name []byte) (Command, bool) {
 	cmd, ok := t.cmds[string(upper[:len(name)])]
 	return cmd, ok
 }
+
+// notIntegerMsg is the reply for an argument that should be a whole number but isn't.
+const notIntegerMsg = "ERR value is not an integer or out of range"
 
 // writeErr writes err as an error reply. Store errors already carry their
 // prefix (ERR, WRONGTYPE, ...).

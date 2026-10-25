@@ -75,3 +75,16 @@ func get(ctx *Context) {
 		ctx.Out.WriteBulk(val)
 	}
 }
+
+// MGET key [key ...]
+func mget(ctx *Context) {
+	vals := ctx.Store.MGet(keyArgs(ctx.Args))
+	ctx.Out.WriteArray(len(vals))
+	for _, v := range vals {
+		if v == nil {
+			ctx.Out.WriteNull()
+		} else {
+			ctx.Out.WriteBulk(v)
+		}
+	}
+}

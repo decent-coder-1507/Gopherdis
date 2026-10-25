@@ -38,6 +38,12 @@ func NewReader(r *bufio.Reader) *Reader {
 	return &Reader{r: r}
 }
 
+// Buffered returns how many bytes have been received but not read yet.
+// The server uses it to tell whether the client already sent more commands.
+func (r *Reader) Buffered() int {
+	return r.r.Buffered()
+}
+
 func protoErr(format string, args ...any) error {
 	return fmt.Errorf("%w: %s", ErrProtocol, fmt.Sprintf(format, args...))
 }

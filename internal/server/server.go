@@ -144,6 +144,10 @@ func (s *Server) untrack(c net.Conn) {
 // handle runs the read-command, run-it, write-reply loop for one client.
 // It returns when the client disconnects or sends something we can't parse;
 // either way only this client is affected.
+//
+// Pipelining: if the client has already sent more commands (they are
+// waiting in the read buffer), we run them before flushing, so a batch of
+// commands gets its replies in one write, in order.
 func (s *Server) handle(conn net.Conn) {
 	r := resp.NewReader(bufio.NewReader(conn))
 	w := resp.NewWriter(conn)
@@ -157,6 +161,9 @@ func (s *Server) handle(conn net.Conn) {
 			continue
 		}
 		s.cmds.Run(ctx, args)
+		if r.Buffered() > 0 {
+			continue
+		}
 		if err := w.Flush(); err != nil {
 			return
 		}

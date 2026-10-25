@@ -201,3 +201,32 @@ func TestPushOntoExpiredList(t *testing.T) {
 		t.Fatalf("push onto expired list: len %d, want 1", n)
 	}
 }
+
+func TestExpireReplacesEntry(t *testing.T) {
+	clock := newFakeClock()
+	s := NewWithClock(clock.Now)
+	s.Set("k", []byte("v"), time.Time{})
+	s.mu.RLock()
+	before := s.data["k"]
+	s.mu.RUnlock()
+
+	if !s.Expire("k", clock.Now().Add(time.Minute)) {
+		t.Fatal("Expire returned false")
+	}
+	if !before.ExpireAt.IsZero() {
+		t.Fatal("Expire changed the old entry in place")
+	}
+	if _, exp := s.size(); exp != 1 {
+		t.Fatal("Expire did not add the key to the expiry index")
+	}
+	if !s.Persist("k") {
+		t.Fatal("Persist returned false")
+	}
+	if _, exp := s.size(); exp != 0 {
+		t.Fatal("Persist left the key in the expiry index")
+	}
+	// A time in the past deletes the key.
+	if !s.Expire("k", clock.Now()) || s.Exists("k") != 0 {
+		t.Fatal("Expire with a past time did not delete the key")
+	}
+}

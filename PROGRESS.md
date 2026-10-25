@@ -447,3 +447,73 @@ Problems / decisions:
 - Handlers now get argument slices that are only valid during the call (this was already the
   documented rule). Everything that keeps data (SET, LPUSH, RPUSH) copies it in the store, and
   keys become Go strings, which copy too.
+
+Commit: e56f5ca "Step 8: benchmark and performance fixes"
+
+## Step 9: Pipelining and extra commands
+Status: DONE
+
+What I built:
+- Pipelining: after running a command, if more bytes are already in the read buffer
+  (`Reader.Buffered() > 0`), the server runs the next command before flushing. It flushes
+  once nothing more is waiting, so a batch gets its replies in one write, in order.
+- `TTL`/`PTTL`: -2 no key, -1 no expiry, else time left. TTL rounds to the nearest second,
+  as Redis does (`PX 1500` -> `TTL` 2).
+- `EXPIRE key seconds`: 1 if set, 0 if no key. Works on any type. Zero or a negative time
+  deletes the key at once (Redis behaviour). The entry is replaced, not edited, so a reader
+  holding the old entry is unaffected.
+- `PERSIST`: 1 only if the key existed and had an expiry.
+- `KEYS pattern`: glob with `*`, `?`, `[abc]`, `[a-z]`, `[^abc]` and `\` escapes, byte-based like
+  Redis. The matcher remembers the last `*` and retries from there, with no recursion, so
+  patterns like `a*a*a*...b` can't blow up (tested with 30 stars against 5,000 bytes). Expired keys
+  are skipped.
+- `LRANGE key start stop` (negative indexes, clamping, empty for no key or an empty range),
+  `LLEN` (0 for no key), `MGET` (nil for missing or non-string keys), `DBSIZE` (live keys
+  only, so a key that expired but wasn't cleaned up yet isn't counted), `FLUSHALL [ASYNC|SYNC]`.
+- WRONGTYPE for LRANGE/LLEN on a string.
+
+Files changed:
+- `internal/server/server.go`, `internal/resp/reader.go` (`Buffered`), `internal/store/more.go`,
+  `internal/commands/{expire,glob,keys,lists,strings,commands}.go`
+- tests: `internal/commands/glob_test.go`, `internal/commands/step9_test.go`,
+  `internal/store/keys_test.go`, `tests/step9_test.go`
+
+Tests:
+- Added: go-redis pipeline of 1,000 mixed commands (SET, GET of the key just set, INCR, ECHO)
+  with every reply checked in order; 500 commands sent in one raw write with 500 ordered replies
+  and nothing extra; 34 glob cases; TTL/PTTL/EXPIRE/PERSIST with a fake clock including rounding,
+  expiry at the exact moment, EXPIRE 0 and EXPIRE on a list; KEYS with 7 patterns (expired key
+  left out); 10 LRANGE index cases plus wrong type, bad numbers and arg counts; MGET with missing
+  and wrong-type keys; DBSIZE not counting an expired key; FLUSHALL in its three forms.
+- Result of `go test -race ./...`: all passing.
+
+Benchmark with pipelining (`redis-benchmark -t set,get -n 100000 -P 16 -q`, 3 runs, middle value):
+
+| Test | Real Redis (req/sec) | Gopherdis (req/sec) | Gopherdis as % of Redis |
+|------|---------------------:|--------------------:|------------------------:|
+| SET  | 724,638              | 769,231             | 106%                    |
+| GET  | 806,452              | 884,956             | 110%                    |
+
+Without pipelining in the same session: real 112,740 / 116,009, Gopherdis 83,682 / 86,580
+(74% / 75%). Once 16 commands share one read and one write, the syscall cost that held us back
+in Step 8 is spread out, and Go can use several cores while real Redis runs commands on one.
+
+Manual checks:
+- `SET k v`, `TTL k` -> `-1`; `EXPIRE k 100` -> `1`; `TTL k` -> `100`; `PTTL k` -> `99996`
+- `PERSIST k` -> `1`; `TTL nokey` -> `-2`
+- `RPUSH l a b c d` -> `4`; `LRANGE l 0 -1` -> `a b c d`; `LRANGE l -2 -1` -> `c d`; `LLEN l` -> `4`
+- `MGET k nope l` -> `v`, (nil), (nil)
+- `KEYS "*"` -> `k l`; `KEYS "l*"` -> `l`; `DBSIZE` -> `2`; `FLUSHALL` -> `OK`; `DBSIZE` -> `0`
+
+"Done when" checklist:
+- [x] The pipeline test passes with all replies in order.
+- [x] All new commands are tested, including the edge cases in the table.
+- [x] Benchmark with `-P 16` is recorded in PROGRESS.md.
+- [x] Commit: `Step 9: pipelining and extra commands`.
+
+Problems / decisions:
+- `EXPIRE` with zero or a negative time deletes the key and returns 1, as Redis does; the guide
+  only says what happens for positive times. A time too large to represent gives
+  `-ERR invalid expire time in 'expire' command`.
+- `KEYS` with a huge database blocks writers while it runs (it holds the read lock), just like
+  in real Redis. That's why Redis has SCAN; SCAN isn't part of this guide.
