@@ -3,7 +3,8 @@ package server
 import (
 	"bufio"
 	"errors"
-	"log"
+	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"time"
@@ -61,7 +62,7 @@ func (s *Server) Serve(ln net.Listener) error {
 			// instead of spinning or giving up.
 			if isTemporary(err) {
 				backoff = min(max(2*backoff, 5*time.Millisecond), time.Second)
-				log.Printf("accept error: %v; retrying in %v", err, backoff)
+				slog.Warn("accept failed; retrying", "err", err, "retry_in", backoff)
 				time.Sleep(backoff)
 				continue
 			}
@@ -73,7 +74,6 @@ func (s *Server) Serve(ln net.Listener) error {
 			conn.Close()
 			return nil
 		}
-		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
 			defer s.untrack(conn)
@@ -95,6 +95,13 @@ func (s *Server) Addr() net.Addr {
 		return nil
 	}
 	return s.ln.Addr()
+}
+
+// ConnectedClients returns the number of open client connections.
+func (s *Server) ConnectedClients() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.conns)
 }
 
 // Close stops accepting clients, closes every open connection and waits
@@ -124,6 +131,9 @@ func (s *Server) isClosed() bool {
 	return s.closed
 }
 
+// track registers a new connection and counts its goroutine in wg. Both
+// happen under mu together with the closed check, so Close can't start
+// waiting between them and miss a goroutine.
 func (s *Server) track(c net.Conn) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -131,6 +141,7 @@ func (s *Server) track(c net.Conn) bool {
 		return false
 	}
 	s.conns[c] = struct{}{}
+	s.wg.Add(1)
 	return true
 }
 
@@ -149,12 +160,19 @@ func (s *Server) untrack(c net.Conn) {
 // waiting in the read buffer), we run them before flushing, so a batch of
 // commands gets its replies in one write, in order.
 func (s *Server) handle(conn net.Conn) {
+	addr := conn.RemoteAddr().String()
+	slog.Debug("client connected", "addr", addr)
+	defer slog.Debug("client disconnected", "addr", addr)
+
 	r := resp.NewReader(bufio.NewReader(conn))
 	w := resp.NewWriter(conn)
 	ctx := s.cmds.NewContext(w)
 	for {
 		args, err := r.ReadCommand()
 		if err != nil {
+			if errors.Is(err, resp.ErrProtocol) || errors.Is(err, io.ErrUnexpectedEOF) {
+				slog.Warn("bad message from client; closing connection", "addr", addr, "err", err)
+			}
 			return
 		}
 		if len(args) == 0 {

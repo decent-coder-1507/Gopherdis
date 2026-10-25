@@ -5,9 +5,12 @@ import (
 	"encoding/gob"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"gopherdis/internal/store"
 )
@@ -108,11 +111,21 @@ type Saver struct {
 	path  string
 	store *store.Store
 	mu    sync.Mutex // held for the whole of a save
+	// lastSave is the Unix time of the last good save. Like Redis, it
+	// starts as the time the Saver was created.
+	lastSave atomic.Int64
 }
 
 // NewSaver returns a Saver that writes st to path.
 func NewSaver(path string, st *store.Store) *Saver {
-	return &Saver{path: path, store: st}
+	s := &Saver{path: path, store: st}
+	s.lastSave.Store(time.Now().Unix())
+	return s
+}
+
+// LastSave returns the time of the last good save.
+func (s *Saver) LastSave() time.Time {
+	return time.Unix(s.lastSave.Load(), 0)
 }
 
 // Path returns the file the saver writes.
@@ -126,8 +139,15 @@ func (s *Saver) Path() string {
 func (s *Saver) Save() (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	start := time.Now()
 	items := s.store.Snapshot()
-	return len(items), Save(s.path, items)
+	if err := Save(s.path, items); err != nil {
+		slog.Error("save failed", "file", s.path, "err", err)
+		return 0, err
+	}
+	s.lastSave.Store(time.Now().Unix())
+	slog.Info("save finished", "file", s.path, "keys", len(items), "took", time.Since(start).Round(time.Microsecond))
+	return len(items), nil
 }
 
 // Load reads the file into the store, replacing what is there. found is

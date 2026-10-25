@@ -33,20 +33,25 @@ func startServer(t *testing.T) string {
 func startServerWith(t *testing.T, opts options) (addr string, stop func()) {
 	t.Helper()
 	st := store.New()
-	cmds := commands.NewTable(st)
+	var srv *server.Server
+	env := commands.Env{
+		Version:          "test",
+		Config:           []commands.Param{{Name: "port", Value: "0"}},
+		ConnectedClients: func() int { return srv.ConnectedClients() },
+	}
 	if opts.dumpPath != "" {
-		saver := persist.NewSaver(opts.dumpPath, st)
-		if _, _, err := saver.Load(); err != nil {
+		env.Saver = persist.NewSaver(opts.dumpPath, st)
+		if _, _, err := env.Saver.Load(); err != nil {
 			t.Fatalf("loading %s: %v", opts.dumpPath, err)
 		}
-		cmds.SetSaver(saver)
 	}
+	cmds := commands.NewTable(st, env)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.New(cmds)
+	srv = server.New(cmds)
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
 	stopped := false

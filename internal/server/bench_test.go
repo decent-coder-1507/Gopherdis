@@ -20,7 +20,7 @@ func benchmarkCommand(b *testing.B, cmd func(i int) string, replyLines int) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	srv := New(commands.NewTable(store.New()))
+	srv := New(commands.NewTable(store.New(), commands.Env{}))
 	go srv.Serve(ln)
 	defer srv.Close()
 

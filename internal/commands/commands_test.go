@@ -33,7 +33,7 @@ func runArgs(t *testing.T, tbl *Table, args ...[]byte) string {
 }
 
 func TestPingEchoCommand(t *testing.T) {
-	tbl := NewTable(store.New())
+	tbl := NewTable(store.New(), Env{})
 	tests := []struct{ in, want string }{
 		{"PING", "+PONG\r\n"},
 		{"ping", "+PONG\r\n"},
@@ -59,14 +59,14 @@ func TestPingEchoCommand(t *testing.T) {
 
 func TestEchoKeepsBytes(t *testing.T) {
 	msg := []byte("Hello World\r\n\x00")
-	got := runArgs(t, NewTable(store.New()), []byte("ECHO"), msg)
+	got := runArgs(t, NewTable(store.New(), Env{}), []byte("ECHO"), msg)
 	if want := "$14\r\nHello World\r\n\x00\r\n"; got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
 
 func TestSetGet(t *testing.T) {
-	tbl := NewTable(store.New())
+	tbl := NewTable(store.New(), Env{})
 	tests := []struct{ in, want string }{
 		{"GET name", "$-1\r\n"},
 		{"SET name Srijoy", "+OK\r\n"},
@@ -88,7 +88,7 @@ func TestSetGet(t *testing.T) {
 }
 
 func TestSetGetEmptyAndBinary(t *testing.T) {
-	tbl := NewTable(store.New())
+	tbl := NewTable(store.New(), Env{})
 	runArgs(t, tbl, []byte("SET"), []byte("e"), []byte{})
 	if got := run(t, tbl, "GET e"); got != "$0\r\n\r\n" {
 		t.Errorf("empty value: got %q", got)
@@ -100,7 +100,7 @@ func TestSetGetEmptyAndBinary(t *testing.T) {
 }
 
 func TestConfigGet(t *testing.T) {
-	tbl := NewTable(store.New())
+	tbl := NewTable(store.New(), Env{})
 	tests := []struct{ in, want string }{
 		{"CONFIG GET save", "*2\r\n$4\r\nsave\r\n$0\r\n\r\n"},
 		{"config get APPENDONLY", "*2\r\n$10\r\nappendonly\r\n$2\r\nno\r\n"},
@@ -121,7 +121,7 @@ func TestConfigGet(t *testing.T) {
 func TestSetExpiryOptions(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	st := store.NewWithClock(func() time.Time { return now })
-	tbl := NewTable(st)
+	tbl := NewTable(st, Env{})
 
 	for _, line := range []string{
 		"SET ex v EX 10",
@@ -162,7 +162,7 @@ func TestSetExpiryOptions(t *testing.T) {
 }
 
 func TestSetExpiryErrors(t *testing.T) {
-	tbl := NewTable(store.New())
+	tbl := NewTable(store.New(), Env{})
 	const bad = "-ERR invalid expire time in 'set' command\r\n"
 	const syntax = "-ERR syntax error\r\n"
 	tests := []struct{ in, want string }{
@@ -194,7 +194,7 @@ func TestSetExpiryErrors(t *testing.T) {
 
 func TestPlainSetClearsExpiry(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tbl := NewTable(store.NewWithClock(func() time.Time { return now }))
+	tbl := NewTable(store.NewWithClock(func() time.Time { return now }), Env{})
 	run(t, tbl, "SET k old EX 1")
 	run(t, tbl, "SET k new")
 	now = now.Add(time.Hour)
@@ -204,14 +204,13 @@ func TestPlainSetClearsExpiry(t *testing.T) {
 }
 
 func TestSaveCommand(t *testing.T) {
-	st := store.New()
-	tbl := NewTable(st)
-	if got := run(t, tbl, "SAVE"); got != "-ERR saving is not configured\r\n" {
+	if got := run(t, NewTable(store.New(), Env{}), "SAVE"); got != "-ERR saving is not configured\r\n" {
 		t.Fatalf("SAVE without saver: %q", got)
 	}
 
+	st := store.New()
 	path := filepath.Join(t.TempDir(), "dump.gob")
-	tbl.SetSaver(persist.NewSaver(path, st))
+	tbl := NewTable(st, Env{Saver: persist.NewSaver(path, st)})
 	run(t, tbl, "SET a 1")
 	if got := run(t, tbl, "save"); got != "+OK\r\n" {
 		t.Fatalf("SAVE: %q", got)

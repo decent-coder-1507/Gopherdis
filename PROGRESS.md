@@ -517,3 +517,65 @@ Problems / decisions:
   `-ERR invalid expire time in 'expire' command`.
 - `KEYS` with a huge database blocks writers while it runs (it holds the read lock), just like
   in real Redis. That's why Redis has SCAN; SCAN isn't part of this guide.
+
+Commit: ea495ed "Step 9: pipelining and extra commands"
+
+## Step 10: Settings, logging, INFO
+Status: DONE
+
+What I built:
+- Flags (Go's `flag` package, `--name` or `-name`): `--port` 6379, `--bind` 127.0.0.1, `--dir` .,
+  `--dbfilename` dump.gob, `--save-interval` 60s, `--requirepass` (empty), `--maxclients` 10000,
+  `--loglevel` info. All are checked at start: port range, bind must be an IP, dbfilename must
+  be a plain name, dir must exist, log level must be known. Every problem is listed in one message
+  and the exit code is 2. `--help` prints one line per flag with its default.
+  (`--save-interval`, `--requirepass` and `--maxclients` are read now and take effect in Steps 11 and 12.)
+- `CONFIG GET` reports the real settings under the flag names, accepts glob patterns
+  (`CONFIG GET *`, `CONFIG GET max*`) and several names; unknown names still give an empty array.
+  `save` is also given in Redis' "seconds changes" form (`60 1`) for tools that ask.
+- Logging with `log/slog` text output: info for server started (address, port, version), data
+  loaded (keys, time), save finished (file, keys, time); debug for client connect/disconnect;
+  warn for a client sending a bad message; error for failed saves and failed start-up. No stored
+  value or password is ever logged.
+- `INFO [section]`: bulk string of `name:value` lines with version, uptime, connected clients,
+  total commands processed, number of keys and last save time.
+- `commands.Env` collects what commands need beyond the store (saver, version, settings,
+  client count, start time), replacing `SetSaver`. `main.go` now parses flags and calls `run`.
+
+Bug found and fixed:
+- The race detector caught a real race in `server.Close` (from Step 2): `wg.Add` for a new
+  client ran after the "closed?" check had released the lock, so `Close` could start waiting
+  before the Add and return while a client goroutine was still starting. `wg.Add` now happens
+  under the same lock as the closed check. Ran the server tests 20 more times with `-race`: clean.
+
+Files changed:
+- `cmd/gopherdis/main.go`, `cmd/gopherdis/config.go` (new), `internal/commands/{commands,admin,persist}.go`,
+  `internal/persist/persist.go` (logs, `LastSave`), `internal/server/server.go` (logs, `ConnectedClients`, race fix)
+- tests: `cmd/gopherdis/config_test.go`, `internal/commands/admin_test.go`, `tests/info_test.go`,
+  plus `Env{}` in the existing tests
+
+Tests:
+- Added: defaults; every flag set; 13 bad flag/argument cases; `--help` lists every flag;
+  CONFIG GET exact, case-insensitive, glob, duplicate names, unknown; INFO fields and that
+  unknown commands aren't counted; INFO over the network with two clients connected.
+- Result of `go test -race ./...`: all passing.
+
+Manual checks:
+- `gopherdis --help` -> usage with all 8 flags and defaults, exit 0
+- `gopherdis --port 70000 --loglevel loud --dir /nope` -> one message naming all three problems, exit 2
+- `gopherdis --port 7000 --dir /tmp` -> `level=INFO msg="server started" address=127.0.0.1 port=7000`;
+  `redis-cli -p 7000 CONFIG GET port` -> `port 7000`
+- `gopherdis --port 6400 --dir /tmp/s10 --loglevel debug`, then `SET`, `CONFIG GET port|dir|nosuch`,
+  `SAVE`, `INFO` -> all as expected; dump written to `/tmp/s10/dump.gob`; the log shows
+  connect/disconnect lines, `save finished ... keys=1`, and a WARN for garbage sent with `nc`
+
+"Done when" checklist:
+- [x] `./gopherdis --port 7000 --dir /tmp` works, and `--help` is clear.
+- [x] Logs show the events above. INFO works in `redis-cli`. (The shutdown log line comes with
+  Step 11, which adds signal handling; until then the process is simply killed.)
+- [x] Commit: `Step 10: settings, logging, INFO`.
+
+Problems / decisions:
+- `CONFIG GET requirepass` returns the password, as real Redis does. After Step 12 only a client
+  that has already authenticated can run CONFIG.
+- `last_save_time` starts as the server start time, like Redis' `LASTSAVE`, until the first save.

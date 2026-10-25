@@ -1,7 +1,12 @@
+// Command gopherdis runs a small Redis-compatible server.
 package main
 
 import (
-	"log"
+	"errors"
+	"flag"
+	"fmt"
+	"log/slog"
+	"os"
 	"time"
 
 	"gopherdis/internal/commands"
@@ -10,32 +15,54 @@ import (
 	"gopherdis/internal/store"
 )
 
-func main() {
-	const addr = ":6379"
-	const dumpPath = "dump.gob"
+// version is set at build time with -ldflags "-X main.version=...".
+var version = "dev"
 
+func main() {
+	cfg, err := parseFlags(os.Args[1:], os.Stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		os.Exit(0)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "gopherdis:", err)
+		os.Exit(2)
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevels[cfg.loglevel]})))
+
+	if err := run(cfg); err != nil {
+		slog.Error(err.Error())
+		os.Exit(1)
+	}
+}
+
+func run(cfg *config) error {
 	st := store.New()
-	saver := persist.NewSaver(dumpPath, st)
+	saver := persist.NewSaver(cfg.dumpPath(), st)
 
 	// Load saved data before accepting clients. A damaged file stops the
 	// server: starting empty would quietly lose the data.
 	start := time.Now()
 	keys, found, err := saver.Load()
 	if err != nil {
-		log.Fatalf("cannot load saved data: %v", err)
+		return fmt.Errorf("cannot load saved data: %w", err)
 	}
 	if found {
-		log.Printf("loaded %d keys from %s in %v", keys, dumpPath, time.Since(start).Round(time.Millisecond))
+		slog.Info("data loaded", "file", cfg.dumpPath(), "keys", keys, "took", time.Since(start).Round(time.Microsecond))
 	}
 
 	stopCleanup := st.StartCleanup()
 	defer stopCleanup()
 
-	cmds := commands.NewTable(st)
-	cmds.SetSaver(saver)
-	srv := server.New(cmds)
-	log.Printf("gopherdis listening on %s", addr)
-	if err := srv.ListenAndServe(addr); err != nil {
-		log.Fatal(err)
-	}
+	var srv *server.Server
+	cmds := commands.NewTable(st, commands.Env{
+		Saver:            saver,
+		Version:          version,
+		Config:           cfg.params(),
+		ConnectedClients: func() int { return srv.ConnectedClients() },
+		StartTime:        start,
+	})
+	srv = server.New(cmds)
+
+	slog.Info("server started", "address", cfg.bind, "port", cfg.port, "version", version)
+	return srv.ListenAndServe(cfg.addr())
 }

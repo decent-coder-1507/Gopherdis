@@ -13,7 +13,7 @@ import (
 
 func TestTTLAndExpire(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tbl := NewTable(store.NewWithClock(func() time.Time { return now }))
+	tbl := NewTable(store.NewWithClock(func() time.Time { return now }), Env{})
 	tests := []struct{ in, want string }{
 		{"TTL nokey", ":-2\r\n"},
 		{"PTTL nokey", ":-2\r\n"},
@@ -63,7 +63,7 @@ func TestTTLAndExpire(t *testing.T) {
 
 func TestPersistedKeyKeepsValue(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tbl := NewTable(store.NewWithClock(func() time.Time { return now }))
+	tbl := NewTable(store.NewWithClock(func() time.Time { return now }), Env{})
 	run(t, tbl, "SET n 5 EX 10")
 	run(t, tbl, "PERSIST n")
 	now = now.Add(time.Hour)
@@ -92,7 +92,7 @@ func arrayReply(t *testing.T, raw string) []string {
 
 func TestKeys(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tbl := NewTable(store.NewWithClock(func() time.Time { return now }))
+	tbl := NewTable(store.NewWithClock(func() time.Time { return now }), Env{})
 	for _, k := range []string{"user:1", "user:2", "user:10", "hello", "hallo", "hxllo"} {
 		run(t, tbl, "SET "+k+" x")
 	}
@@ -120,7 +120,7 @@ func TestKeys(t *testing.T) {
 }
 
 func TestLRangeLLen(t *testing.T) {
-	tbl := NewTable(store.New())
+	tbl := NewTable(store.New(), Env{})
 	run(t, tbl, "RPUSH l a b c d e")
 	tests := []struct{ in, want string }{
 		{"LRANGE l 0 -1", "a b c d e"},
@@ -160,7 +160,7 @@ func TestLRangeLLen(t *testing.T) {
 }
 
 func TestMGet(t *testing.T) {
-	tbl := NewTable(store.New())
+	tbl := NewTable(store.New(), Env{})
 	run(t, tbl, "SET a 1")
 	run(t, tbl, "SET b 2")
 	run(t, tbl, "RPUSH l x")
@@ -175,7 +175,7 @@ func TestMGet(t *testing.T) {
 
 func TestDBSizeFlushAll(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tbl := NewTable(store.NewWithClock(func() time.Time { return now }))
+	tbl := NewTable(store.NewWithClock(func() time.Time { return now }), Env{})
 	if got := run(t, tbl, "DBSIZE"); got != ":0\r\n" {
 		t.Fatalf("empty DBSIZE: %q", got)
 	}

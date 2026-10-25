@@ -2,11 +2,34 @@ package commands
 
 import (
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"gopherdis/internal/persist"
 	"gopherdis/internal/resp"
 	"gopherdis/internal/store"
 )
+
+// Env holds what commands need from outside the store: the saver, the
+// settings and facts about the running server. Zero fields switch the
+// matching feature off, which keeps tests short.
+type Env struct {
+	// Saver writes the database to disk. Nil means saving is off.
+	Saver *persist.Saver
+	// Version is reported by INFO.
+	Version string
+	// Config is what CONFIG GET reports, in this order.
+	Config []Param
+	// ConnectedClients returns the number of open client connections.
+	ConnectedClients func() int
+	// StartTime is when the server started, for INFO's uptime.
+	StartTime time.Time
+}
+
+// Param is one setting reported by CONFIG GET.
+type Param struct {
+	Name, Value string
+}
 
 // Context is what a handler gets for one command call. The server keeps one
 // Context per connection and reuses it for every command on it.
@@ -18,8 +41,10 @@ type Context struct {
 	Out *resp.Writer
 	// Store is the database.
 	Store *store.Store
-	// Saver writes the database to disk. It is nil when saving is off.
-	Saver *persist.Saver
+	// Env is the server around the store. It is shared; don't change it.
+	Env *Env
+
+	table *Table
 }
 
 // Handler runs one command and writes exactly one reply to ctx.Out.
@@ -38,13 +63,18 @@ type Command struct {
 type Table struct {
 	cmds  map[string]Command
 	store *store.Store
-	saver *persist.Saver
+	env   Env
+	// processed counts commands run (found and with the right argument count).
+	processed atomic.Int64
 }
 
 // NewTable returns a table with every built-in command registered,
 // working on st.
-func NewTable(st *store.Store) *Table {
-	t := &Table{cmds: make(map[string]Command), store: st}
+func NewTable(st *store.Store, env Env) *Table {
+	if env.StartTime.IsZero() {
+		env.StartTime = time.Now()
+	}
+	t := &Table{cmds: make(map[string]Command), store: st, env: env}
 	t.add("PING", -1, ping)
 	t.add("ECHO", 2, echo)
 	t.add("COMMAND", -1, command)
@@ -68,12 +98,8 @@ func NewTable(st *store.Store) *Table {
 	t.add("MGET", -2, mget)
 	t.add("DBSIZE", 1, dbsize)
 	t.add("FLUSHALL", -1, flushall)
+	t.add("INFO", -1, info)
 	return t
-}
-
-// SetSaver sets the saver used by SAVE. Without one, SAVE replies with an error.
-func (t *Table) SetSaver(s *persist.Saver) {
-	t.saver = s
 }
 
 func (t *Table) add(name string, arity int, h Handler) {
@@ -83,7 +109,7 @@ func (t *Table) add(name string, arity int, h Handler) {
 // NewContext returns the Context for one client connection whose replies
 // go to out.
 func (t *Table) NewContext(out *resp.Writer) *Context {
-	return &Context{Out: out, Store: t.store, Saver: t.saver}
+	return &Context{Out: out, Store: t.store, Env: &t.env, table: t}
 }
 
 // Run looks up the command named by args[0], checks its argument count
@@ -101,6 +127,7 @@ func (t *Table) Run(ctx *Context, args [][]byte) {
 	ctx.Args = args
 	cmd.Handler(ctx)
 	ctx.Args = nil
+	t.processed.Add(1) // after the call, as Redis counts, so INFO doesn't count itself
 }
 
 // lookup finds a command by name, ignoring case, without allocating: this
@@ -162,40 +189,4 @@ func echo(ctx *Context) {
 // waits for the answer, so we reply with an empty array to anything.
 func command(ctx *Context) {
 	ctx.Out.WriteArray(0)
-}
-
-// configValues are the settings CONFIG GET can report. redis-benchmark asks
-// for "save" and "appendonly" when it starts and prints a warning unless both
-// come back as [name, value] pairs. We save nothing automatically yet and
-// have no append-only file.
-var configValues = map[string]string{
-	"save":       "",
-	"appendonly": "no",
-}
-
-// CONFIG GET parameter [parameter ...]
-//
-// Each known name adds a [name, value] pair to the reply; unknown names add
-// nothing, so a request for only unknown names gets an empty array.
-func config(ctx *Context) {
-	sub := strings.ToUpper(string(ctx.Args[1]))
-	if sub != "GET" {
-		ctx.Out.WriteError("ERR unknown subcommand '" + string(ctx.Args[1]) + "'")
-		return
-	}
-	if len(ctx.Args) < 3 {
-		WrongArgs(ctx.Out, "config|get")
-		return
-	}
-	var pairs []string
-	for _, arg := range ctx.Args[2:] {
-		name := strings.ToLower(string(arg))
-		if val, ok := configValues[name]; ok {
-			pairs = append(pairs, name, val)
-		}
-	}
-	ctx.Out.WriteArray(len(pairs))
-	for _, p := range pairs {
-		ctx.Out.WriteBulkString(p)
-	}
 }

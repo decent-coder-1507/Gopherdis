@@ -14,7 +14,7 @@ const (
 
 // The "How to test" lines of Step 6 in order, then the other rules.
 func TestStep6Commands(t *testing.T) {
-	tbl := NewTable(store.New())
+	tbl := NewTable(store.New(), Env{})
 	tests := []struct{ in, want string }{
 		{"SET n 10", "+OK\r\n"},
 		{"INCR n", ":11\r\n"},
@@ -62,7 +62,7 @@ func TestStep6Commands(t *testing.T) {
 
 func TestIncrKeepsExpiry(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	tbl := NewTable(store.NewWithClock(func() time.Time { return now }))
+	tbl := NewTable(store.NewWithClock(func() time.Time { return now }), Env{})
 	run(t, tbl, "SET n 1 EX 10")
 	run(t, tbl, "INCR n")
 	run(t, tbl, "DECR n")

@@ -17,7 +17,7 @@ func startServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(commands.NewTable(store.New()))
+	srv := New(commands.NewTable(store.New(), commands.Env{}))
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
 	t.Cleanup(func() {
