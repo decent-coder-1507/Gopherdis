@@ -46,6 +46,12 @@ func NewTable(st *store.Store) *Table {
 	t.add("SET", -3, set)
 	t.add("GET", 2, get)
 	t.add("CONFIG", -2, config)
+	t.add("EXISTS", -2, exists)
+	t.add("DEL", -2, del)
+	t.add("INCR", 2, incr)
+	t.add("DECR", 2, decr)
+	t.add("LPUSH", -3, lpush)
+	t.add("RPUSH", -3, rpush)
 	return t
 }
 

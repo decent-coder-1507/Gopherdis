@@ -23,11 +23,12 @@ var ErrWrongType = errors.New("WRONGTYPE Operation against a key holding the wro
 //
 // Stored byte slices are never changed in place: a new value always gets a
 // new slice. That lets callers keep using a slice they got from the store
-// after the store has moved on.
+// after the store has moved on. A List does change in place, under the write
+// lock, so readers copy what they need out of it while holding the read lock.
 type Entry struct {
 	Kind Kind
-	Str  []byte   // used when Kind is KindString
-	List [][]byte // used when Kind is KindList
+	Str  []byte // used when Kind is KindString
+	List *List  // used when Kind is KindList
 	// ExpireAt is when the key stops existing. Zero means never.
 	ExpireAt time.Time
 }

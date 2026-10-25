@@ -272,3 +272,53 @@ Problems / decisions:
 - "Random" sampling uses Go's map iteration, which starts at a random place each time.
   It's not perfectly uniform, but it's what makes the cleanup cheap, and the tests show it
   clears everything.
+
+Commit: 2f7d75f "Step 5: key expiry"
+
+## Step 6: EXISTS, DEL, INCR, DECR, LPUSH, RPUSH
+Status: DONE
+
+What I built:
+- `EXISTS k...` (a key named twice counts twice) and `DEL k...` (counts keys actually deleted).
+  Both treat expired keys as missing; `DEL` still clears them out.
+- `INCR`/`DECR` through `Store.IncrBy`: 64-bit, a missing (or expired) key starts at 0, the key
+  keeps its expiry, overflow and non-integers reply `-ERR value is not an integer or out of range`.
+  Parsing follows Redis: optional `-`, no `+`, no spaces, no leading zeros, no `-0`.
+- `LPUSH`/`RPUSH` through `Store.Push`, which creates the list when needed. `LPUSH mylist a b c`
+  gives `c, b, a`.
+- `store.List`: two slices, one for the front (reversed) and one for the back, so pushing at
+  either end is an append. With a single slice every LPUSH would copy the whole list, and
+  `redis-benchmark -t lpush` (100,000 pushes onto one list) would slow to a crawl.
+- WRONGTYPE: GET/INCR/DECR on a list and LPUSH/RPUSH on a string. SET still replaces any type.
+
+Files changed:
+- `internal/store/keys.go`, `internal/store/list.go`, `internal/store/store.go` (`Entry.List` is now `*List`)
+- `internal/commands/keys.go`, `internal/commands/lists.go`, `internal/commands/commands.go`
+- tests: `internal/store/keys_test.go`, `internal/store/list_test.go`, `internal/store/store_test.go`,
+  `internal/commands/keys_test.go`, `tests/keys_test.go`
+
+Tests:
+- Added: every "How to test" line of this step, in order, at command level and over the network
+  with go-redis; 16 bad-integer strings (each must leave the value unchanged); overflow at both
+  ends of int64; INCR keeping an expiry and INCR on an expired key starting fresh; push order for
+  LPUSH, RPUSH and mixed pushes; every WRONGTYPE combination; argument-count errors for all six.
+- Result of `go test -race ./...`: all passing.
+
+Manual checks:
+- `redis-cli SET n 10 ; redis-cli INCR n` -> `OK`, `11`
+- `redis-cli INCR new` -> `1`
+- `redis-cli SET word hi ; redis-cli INCR word` -> `OK`, `ERR value is not an integer or out of range`
+- `redis-cli RPUSH list a b ; redis-cli LPUSH list z` -> `2`, `3`
+- `redis-cli GET list` -> `WRONGTYPE Operation against a key holding the wrong kind of value`
+- `redis-cli EXISTS n list nope` -> `2`; `redis-cli DEL n list nope` -> `2`
+- `redis-benchmark -t lpush,rpush,incr -n 100000 -q` -> INCR 77220, LPUSH 82102, RPUSH 81566 rps
+
+"Done when" checklist:
+- [x] All six commands work, with correct errors.
+- [x] Commit: `Step 6: EXISTS, DEL, INCR, DECR, LPUSH, RPUSH`.
+
+Problems / decisions:
+- Lists are the one value changed in place (under the write lock). Anything that reads a list
+  copies the item slice out while holding the lock (`List.Slice`), so the reply can be
+  written after the lock is released. The items' bytes are never changed, so only the slice
+  headers are copied.

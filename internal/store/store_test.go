@@ -52,7 +52,7 @@ func TestSetCopiesValue(t *testing.T) {
 
 func TestGetWrongType(t *testing.T) {
 	s := New()
-	s.data["l"] = &Entry{Kind: KindList, List: [][]byte{[]byte("a")}}
+	s.data["l"] = &Entry{Kind: KindList, List: NewList([][]byte{[]byte("a")})}
 	if _, _, err := s.Get("l"); err != ErrWrongType {
 		t.Fatalf("got %v, want ErrWrongType", err)
 	}
