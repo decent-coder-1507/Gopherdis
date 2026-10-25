@@ -765,8 +765,8 @@ Manual checks:
   on this machine; the other containers running here weren't touched.)
 
 "Done when" checklist:
-- [ ] A fresh copy of the repo builds and runs with only the README instructions. (checked after push, below)
-- [ ] CI passes. The Docker image runs and keeps data in `/data`. (image: yes, above; CI: checked after push)
+- [x] A fresh copy of the repo builds and runs with only the README instructions.
+- [x] CI passes. The Docker image runs and keeps data in `/data`.
 - [x] Commit: `Step 13: packaging, CI, README`.
 
 Problems / decisions:
@@ -774,3 +774,37 @@ Problems / decisions:
   `docker run -v $(pwd)/data:/data`, Docker creates `./data` owned by root if it doesn't exist,
   and a non-root server couldn't write there. Inside the container root has no extra reach,
   and the binary is the only file in the image.
+
+Checked after pushing 44afda7:
+- Fresh copy: `git clone https://github.com/decent-coder-1507/Gopherdis.git` into an empty folder,
+  then only the README steps: `make build` -> builds (version `44afda7`); `./bin/gopherdis --port 6402`
+  (6379 is taken here); `redis-cli SET city Kolkata` -> `OK`; `GET city` -> `Kolkata`; Ctrl+C -> exit 0
+  and `dump.gob` written; the plain `go build` line works too; `make test` passes.
+- CI: the first GitHub Actions run (run 40214635511) passed both jobs: `test` (gofmt, vet,
+  race tests, build) and `docker` (image built, key set and read, `dump.gob` found in the mounted
+  folder after `docker stop`).
+
+Commit: 44afda7 "Step 13: packaging, CI, README" (this note is a small follow-up commit inside Step 13)
+
+## Final checklist
+
+Part A, the challenge:
+- [x] RESP parser and serializer, fully tested, with no crash on bad input (Step 1, fuzzed)
+- [x] Server on port 6379 works with the real redis-cli, including interactive mode (Step 2)
+- [x] PING, ECHO, SET, GET work (Steps 2-3)
+- [x] Many clients at once; redis-benchmark runs clean; no data races (Step 4)
+- [x] SET with EX, PX, EXAT, PXAT; expired keys removed lazily and in the background (Step 5)
+- [x] EXISTS, DEL, INCR, DECR, LPUSH, RPUSH with correct errors (Step 6)
+- [x] SAVE writes safely; data loads on start-up (Step 7)
+- [x] Speed table recorded; within 3x of real Redis: 60% / 54% (Step 8)
+
+Part B, working product:
+- [x] Pipelining works, with replies in the right order (Step 9)
+- [x] TTL, PTTL, EXPIRE, PERSIST, KEYS, LRANGE, LLEN, MGET, DBSIZE, FLUSHALL (Step 9)
+- [x] Settings flags with good defaults; --help and --version (Steps 10, 13)
+- [x] Clear logs; INFO command (Step 10)
+- [x] Safe shutdown saves data; auto-save; BGSAVE; LASTSAVE (Step 11)
+- [x] Max clients, size limits, protocol errors handled; inline commands (Step 12)
+- [x] Password with AUTH, NOAUTH and WRONGPASS (Step 12)
+- [x] Dockerfile, Makefile, CI passing, plain-English README (Step 13)
+- [x] PROGRESS.md has a report for all 14 steps
