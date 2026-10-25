@@ -173,3 +173,48 @@ Manual checks:
 Problems / decisions:
 - `SET k v extra` replies `-ERR syntax error`, as real Redis does for an unknown option.
   Step 5 turns the extra arguments into the EX/PX/EXAT/PXAT options.
+
+Commit: bad0efe "Step 3: SET and GET"
+
+## Step 4: Concurrent clients
+Status: DONE
+
+What I built:
+- `sync.RWMutex` in `Store`: `Get` takes the read lock, `Set` the write lock. `Set` copies the
+  value before taking the lock, so the lock covers only the map write. No lock is ever held
+  while reading from or writing to a connection: handlers get the value, release the lock,
+  then write the reply.
+- Each connection already writes through a `bufio.Writer` (from Step 1's `resp.Writer`) and
+  flushes after every reply. Step 9 changes that for pipelining.
+- `CONFIG GET name [name ...]`: `save` -> `""`, `appendonly` -> `"no"`, other names nothing.
+  `CONFIG` with another subcommand gets `-ERR unknown subcommand`.
+
+Files changed:
+- `internal/store/store.go`, `internal/commands/commands.go`
+- tests: `internal/store/store_test.go`, `internal/commands/commands_test.go`, `tests/concurrency_test.go`
+
+Tests:
+- Added: store test with 50 goroutines x 1,000 SET+GET on their own keys plus one shared key;
+  go-redis test with 50 separate client connections x 1,000 SET+GET, then a final check of all
+  50,000 keys; 7 CONFIG cases.
+- Result of `go test -race ./...`: all passing, no data races.
+
+Manual checks:
+- `redis-benchmark -t SET,GET -q` -> `SET: 67934.78 requests per second`, `GET: 66800.27 requests per second`,
+  no errors, no warnings
+- `redis-benchmark -t SET,GET -q -n 1000` -> SET 52631.58, GET 76923.08 rps
+- `redis-cli PING` afterwards -> `PONG` (server still running)
+
+"Done when" checklist:
+- [x] `redis-benchmark` finishes with no errors and the server does not crash.
+- [x] `go test -race ./...` reports no data races.
+- [x] Commit: `Step 4: concurrent clients`.
+
+Problems / decisions:
+- The guide says an empty array for `CONFIG GET` avoids redis-benchmark's warnings. With
+  redis-benchmark 7.2 it doesn't: it still prints `WARNING: Could not fetch server CONFIG`,
+  because it expects a `[name, value]` pair for both `save` and `appendonly`. So those two names
+  return their real values (we have no automatic saving and no AOF yet); any other name still
+  returns an empty array. Step 10 extends the same table with the real settings.
+- These numbers are from WSL2 with the benchmark and server on the same machine, so they
+  move around by 20% or so between runs. Step 8 does the proper comparison.

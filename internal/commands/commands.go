@@ -45,6 +45,7 @@ func NewTable(st *store.Store) *Table {
 	t.add("COMMAND", -1, command)
 	t.add("SET", -3, set)
 	t.add("GET", 2, get)
+	t.add("CONFIG", -2, config)
 	return t
 }
 
@@ -102,4 +103,40 @@ func echo(ctx *Context) {
 // waits for the answer, so we reply with an empty array to anything.
 func command(ctx *Context) {
 	ctx.Out.WriteArray(0)
+}
+
+// configValues are the settings CONFIG GET can report. redis-benchmark asks
+// for "save" and "appendonly" when it starts and prints a warning unless both
+// come back as [name, value] pairs. We save nothing automatically yet and
+// have no append-only file.
+var configValues = map[string]string{
+	"save":       "",
+	"appendonly": "no",
+}
+
+// CONFIG GET parameter [parameter ...]
+//
+// Each known name adds a [name, value] pair to the reply; unknown names add
+// nothing, so a request for only unknown names gets an empty array.
+func config(ctx *Context) {
+	sub := strings.ToUpper(string(ctx.Args[1]))
+	if sub != "GET" {
+		ctx.Out.WriteError("ERR unknown subcommand '" + string(ctx.Args[1]) + "'")
+		return
+	}
+	if len(ctx.Args) < 3 {
+		WrongArgs(ctx.Out, "config|get")
+		return
+	}
+	var pairs []string
+	for _, arg := range ctx.Args[2:] {
+		name := strings.ToLower(string(arg))
+		if val, ok := configValues[name]; ok {
+			pairs = append(pairs, name, val)
+		}
+	}
+	ctx.Out.WriteArray(len(pairs))
+	for _, p := range pairs {
+		ctx.Out.WriteBulkString(p)
+	}
 }

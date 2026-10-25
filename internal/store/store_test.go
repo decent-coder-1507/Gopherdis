@@ -2,6 +2,8 @@ package store
 
 import (
 	"bytes"
+	"fmt"
+	"sync"
 	"testing"
 )
 
@@ -56,5 +58,35 @@ func TestGetWrongType(t *testing.T) {
 	s.Set("l", []byte("now a string"))
 	if v, _, err := s.Get("l"); err != nil || string(v) != "now a string" {
 		t.Fatalf("SET over a list: %q, %v", v, err)
+	}
+}
+
+func TestConcurrentAccess(t *testing.T) {
+	s := New()
+	var wg sync.WaitGroup
+	for g := 0; g < 50; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			for i := 0; i < 1000; i++ {
+				key := fmt.Sprintf("k%d-%d", g, i)
+				s.Set(key, []byte(key))
+				if v, ok, _ := s.Get(key); !ok || string(v) != key {
+					t.Errorf("GET %s right after SET: %q", key, v)
+				}
+				// Everyone also hits one shared key.
+				s.Set("shared", []byte(key))
+				s.Get("shared")
+			}
+		}(g)
+	}
+	wg.Wait()
+	for g := 0; g < 50; g++ {
+		for i := 0; i < 1000; i++ {
+			key := fmt.Sprintf("k%d-%d", g, i)
+			if v, ok, _ := s.Get(key); !ok || string(v) != key {
+				t.Fatalf("%s: got %q", key, v)
+			}
+		}
 	}
 }

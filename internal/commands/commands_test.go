@@ -94,3 +94,22 @@ func TestSetGetEmptyAndBinary(t *testing.T) {
 		t.Errorf("binary value: got %q", got)
 	}
 }
+
+func TestConfigGet(t *testing.T) {
+	tbl := NewTable(store.New())
+	tests := []struct{ in, want string }{
+		{"CONFIG GET save", "*2\r\n$4\r\nsave\r\n$0\r\n\r\n"},
+		{"config get APPENDONLY", "*2\r\n$10\r\nappendonly\r\n$2\r\nno\r\n"},
+		{"CONFIG GET nosuchthing", "*0\r\n"},
+		{"CONFIG GET save nosuchthing appendonly",
+			"*4\r\n$4\r\nsave\r\n$0\r\n\r\n$10\r\nappendonly\r\n$2\r\nno\r\n"},
+		{"CONFIG", "-ERR wrong number of arguments for 'config' command\r\n"},
+		{"CONFIG GET", "-ERR wrong number of arguments for 'config|get' command\r\n"},
+		{"CONFIG SET a b", "-ERR unknown subcommand 'SET'\r\n"},
+	}
+	for _, tc := range tests {
+		if got := run(t, tbl, tc.in); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
