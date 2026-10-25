@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSetGet(t *testing.T) {
@@ -13,12 +14,12 @@ func TestSetGet(t *testing.T) {
 		t.Fatalf("missing key: ok=%v err=%v", ok, err)
 	}
 
-	s.Set("name", []byte("Srijoy"))
+	s.Set("name", []byte("Srijoy"), time.Time{})
 	if v, ok, _ := s.Get("name"); !ok || string(v) != "Srijoy" {
 		t.Fatalf("got %q, %v", v, ok)
 	}
 
-	s.Set("name", []byte("Paul"))
+	s.Set("name", []byte("Paul"), time.Time{})
 	if v, _, _ := s.Get("name"); string(v) != "Paul" {
 		t.Fatalf("overwrite: got %q", v)
 	}
@@ -26,14 +27,14 @@ func TestSetGet(t *testing.T) {
 
 func TestEmptyAndBinaryValues(t *testing.T) {
 	s := New()
-	s.Set("empty", []byte{})
+	s.Set("empty", []byte{}, time.Time{})
 	v, ok, _ := s.Get("empty")
 	if !ok || v == nil || len(v) != 0 {
 		t.Fatalf("empty value: %q, ok=%v, nil=%v", v, ok, v == nil)
 	}
 
 	bin := []byte{0, 1, '\r', '\n', 0xff, 0}
-	s.Set("bin", bin)
+	s.Set("bin", bin, time.Time{})
 	if v, _, _ := s.Get("bin"); !bytes.Equal(v, bin) {
 		t.Fatalf("binary value: got %v", v)
 	}
@@ -42,7 +43,7 @@ func TestEmptyAndBinaryValues(t *testing.T) {
 func TestSetCopiesValue(t *testing.T) {
 	s := New()
 	buf := []byte("abc")
-	s.Set("k", buf)
+	s.Set("k", buf, time.Time{})
 	buf[0] = 'X'
 	if v, _, _ := s.Get("k"); string(v) != "abc" {
 		t.Fatalf("store kept a reference to the caller's buffer: %q", v)
@@ -55,7 +56,7 @@ func TestGetWrongType(t *testing.T) {
 	if _, _, err := s.Get("l"); err != ErrWrongType {
 		t.Fatalf("got %v, want ErrWrongType", err)
 	}
-	s.Set("l", []byte("now a string"))
+	s.Set("l", []byte("now a string"), time.Time{})
 	if v, _, err := s.Get("l"); err != nil || string(v) != "now a string" {
 		t.Fatalf("SET over a list: %q, %v", v, err)
 	}
@@ -70,12 +71,12 @@ func TestConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < 1000; i++ {
 				key := fmt.Sprintf("k%d-%d", g, i)
-				s.Set(key, []byte(key))
+				s.Set(key, []byte(key), time.Time{})
 				if v, ok, _ := s.Get(key); !ok || string(v) != key {
 					t.Errorf("GET %s right after SET: %q", key, v)
 				}
 				// Everyone also hits one shared key.
-				s.Set("shared", []byte(key))
+				s.Set("shared", []byte(key), time.Time{})
 				s.Get("shared")
 			}
 		}(g)

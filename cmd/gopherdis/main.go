@@ -10,7 +10,11 @@ import (
 
 func main() {
 	const addr = ":6379"
-	srv := server.New(commands.NewTable(store.New()))
+	st := store.New()
+	stopCleanup := st.StartCleanup()
+	defer stopCleanup()
+
+	srv := server.New(commands.NewTable(st))
 	log.Printf("gopherdis listening on %s", addr)
 	if err := srv.ListenAndServe(addr); err != nil {
 		log.Fatal(err)

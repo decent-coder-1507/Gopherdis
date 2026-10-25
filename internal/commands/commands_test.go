@@ -2,8 +2,10 @@ package commands
 
 import (
 	"bytes"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"gopherdis/internal/resp"
 	"gopherdis/internal/store"
@@ -111,5 +113,90 @@ func TestConfigGet(t *testing.T) {
 		if got := run(t, tbl, tc.in); got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.in, got, tc.want)
 		}
+	}
+}
+
+func TestSetExpiryOptions(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	st := store.NewWithClock(func() time.Time { return now })
+	tbl := NewTable(st)
+
+	for _, line := range []string{
+		"SET ex v EX 10",
+		"SET px v px 500",
+		"SET exat v EXAT " + strconv.FormatInt(now.Unix()+10, 10),
+		"SET pxat v PxAt " + strconv.FormatInt(now.UnixMilli()+500, 10),
+	} {
+		if got := run(t, tbl, line); got != "+OK\r\n" {
+			t.Fatalf("%s: %q", line, got)
+		}
+	}
+	now = now.Add(499 * time.Millisecond)
+	for _, k := range []string{"ex", "px", "exat", "pxat"} {
+		if got := run(t, tbl, "GET "+k); got != "$1\r\nv\r\n" {
+			t.Errorf("GET %s before expiry: %q", k, got)
+		}
+	}
+	now = now.Add(time.Millisecond)
+	for k, want := range map[string]string{"ex": "$1\r\nv\r\n", "exat": "$1\r\nv\r\n", "px": "$-1\r\n", "pxat": "$-1\r\n"} {
+		if got := run(t, tbl, "GET "+k); got != want {
+			t.Errorf("GET %s at 500ms: %q, want %q", k, got, want)
+		}
+	}
+	now = now.Add(9500 * time.Millisecond)
+	for _, k := range []string{"ex", "exat"} {
+		if got := run(t, tbl, "GET "+k); got != "$-1\r\n" {
+			t.Errorf("GET %s at 10s: %q", k, got)
+		}
+	}
+
+	// An absolute time already in the past: accepted, key is gone at once.
+	if got := run(t, tbl, "SET old v EXAT 1000"); got != "+OK\r\n" {
+		t.Fatalf("SET EXAT in the past: %q", got)
+	}
+	if got := run(t, tbl, "GET old"); got != "$-1\r\n" {
+		t.Errorf("GET old: %q", got)
+	}
+}
+
+func TestSetExpiryErrors(t *testing.T) {
+	tbl := NewTable(store.New())
+	const bad = "-ERR invalid expire time in 'set' command\r\n"
+	const syntax = "-ERR syntax error\r\n"
+	tests := []struct{ in, want string }{
+		{"SET k v EX 0", bad},
+		{"SET k v EX -5", bad},
+		{"SET k v PX 0", bad},
+		{"SET k v EXAT -1", bad},
+		{"SET k v PXAT 0", bad},
+		{"SET k v EX ten", bad},
+		{"SET k v PX 1.5", bad},
+		{"SET k v EX 99999999999999999999", bad},
+		{"SET k v EX 9223372036854775807", bad},
+		{"SET k v PX 9223372036854775807", bad},
+		{"SET k v EX", syntax},
+		{"SET k v EX 10 PX 100", syntax},
+		{"SET k v EX 10 EX 10", syntax},
+		{"SET k v FOO 10", syntax},
+		{"SET k v 10", syntax},
+	}
+	for _, tc := range tests {
+		if got := run(t, tbl, tc.in); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.in, got, tc.want)
+		}
+	}
+	if got := run(t, tbl, "GET k"); got != "$-1\r\n" {
+		t.Errorf("a failed SET stored something: %q", got)
+	}
+}
+
+func TestPlainSetClearsExpiry(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	tbl := NewTable(store.NewWithClock(func() time.Time { return now }))
+	run(t, tbl, "SET k old EX 1")
+	run(t, tbl, "SET k new")
+	now = now.Add(time.Hour)
+	if got := run(t, tbl, "GET k"); got != "$3\r\nnew\r\n" {
+		t.Errorf("got %q", got)
 	}
 }

@@ -218,3 +218,57 @@ Problems / decisions:
   returns an empty array. Step 10 extends the same table with the real settings.
 - These numbers are from WSL2 with the benchmark and server on the same machine, so they
   move around by 20% or so between runs. Step 8 does the proper comparison.
+
+Commit: 24f3e41 "Step 4: concurrent clients"
+
+## Step 5: Key expiry
+Status: DONE
+
+What I built:
+- `SET key value EX|PX|EXAT|PXAT n`, options case-insensitive, at most one. Zero, negative,
+  non-numeric or absurdly large times reply `-ERR invalid expire time in 'set' command`;
+  two options, a missing number or an unknown option reply `-ERR syntax error`.
+- The expiry is stored as an absolute time in `Entry.ExpireAt`. A plain `SET` writes a new
+  entry with no expiry, which clears the old one.
+- Lazy expiry: a read finds the key expired under the read lock, then takes the write lock,
+  checks again (another client may have replaced the key meanwhile) and deletes it.
+- Active expiry (`store/expire.go`): 10 times a second, sample up to 20 keys from the
+  `expires` index (only keys with an expiry are in it) and delete the expired ones; repeat
+  at once if more than 5 were expired. Each round takes the lock on its own, and one run is
+  capped at 25 ms, so clients are never blocked for long.
+- The clock is a `now func() time.Time` in the store (`NewWithClock`), so tests move time by
+  hand instead of sleeping.
+- `main.go` starts the cleanup and stops it on exit.
+
+Files changed:
+- `internal/store/store.go`, `internal/store/expire.go`, `internal/commands/strings.go`, `cmd/gopherdis/main.go`
+- tests: `internal/store/expire_test.go`, `internal/store/store_test.go`,
+  `internal/commands/commands_test.go`, `tests/expiry_test.go`
+
+Tests:
+- Added: lazy expiry at the exact expiry instant (fake clock), plain SET clearing the expiry,
+  cleanup removing 1,000 unread expired keys while keeping 20 live ones, a cycle repeating when
+  most samples are expired, the background cleanup with the real clock; all four options before
+  and after expiry, EXAT in the past, 15 bad-time and syntax cases; go-redis tests over the network
+  for the four options, the errors and plain SET clearing the expiry.
+- Result of `go test -race ./...`: all passing.
+
+Manual checks:
+- `redis-cli SET temp hello PX 2000` -> `OK`; `GET temp` -> `hello`; after 2 s `GET temp` -> (nil)
+- `redis-cli SET a 1 EX 0` -> `ERR invalid expire time in 'set' command`
+- `redis-cli SET a 1 ex 10 px 100` -> `ERR syntax error`
+- `SET b 1 PX 3000`, wait 3 s, `GET b` -> (nil)
+
+"Done when" checklist:
+- [x] All four options work and all tests pass.
+- [x] Expired keys are removed even if they are never read again.
+- [x] Commit: `Step 5: key expiry`.
+
+Problems / decisions:
+- An `EXAT`/`PXAT` time in the past is accepted and the key is gone at once, the same as real
+  Redis. Only zero and negative numbers are rejected, as the guide says.
+- Expiry times are capped at 2^50 ms (about 35,000 years) so seconds-to-milliseconds and
+  `time.Time` math can't overflow.
+- "Random" sampling uses Go's map iteration, which starts at a random place each time.
+  It's not perfectly uniform, but it's what makes the cleanup cheap, and the tests show it
+  clears everything.
