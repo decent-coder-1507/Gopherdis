@@ -144,8 +144,8 @@ func TestLoadBrokenFile(t *testing.T) {
 			if !found || !strings.Contains(err.Error(), path) {
 				t.Errorf("error should name the file: %v", err)
 			}
-			if st.Len() != 0 {
-				t.Errorf("store has %d keys after a failed load", st.Len())
+			if st.DBSize() != 0 {
+				t.Errorf("store has %d keys after a failed load", st.DBSize())
 			}
 		})
 	}

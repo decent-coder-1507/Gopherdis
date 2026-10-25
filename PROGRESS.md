@@ -717,3 +717,60 @@ Problems / decisions:
 - With go-redis, a refused (max clients) client may see "broken pipe" instead of the error text,
   because the library writes its handshake before reading and the server has already closed. Real
   Redis behaves the same way. The exact bytes are tested over raw TCP.
+
+Commit: 48be317 "Step 12: limits, AUTH, inline commands"
+
+## Step 13: Packaging, CI, README
+Status: DONE
+
+What I built:
+- `Dockerfile`, two stages: build with `golang:1.22` (static binary, `CGO_ENABLED=0`, version
+  passed in with `--build-arg VERSION`), run on `gcr.io/distroless/static-debian12`. The image is
+  4.96 MB. It listens on `0.0.0.0:6379` and saves to the `/data` volume. `.dockerignore` keeps
+  `.git`, binaries and dump files out of the build.
+- `Makefile`: `build`, `test`, `vet`, `run`, `bench` (starts a fresh server on port 6390, runs the
+  Step 8 benchmark without and with `-P 16`, stops it) and `docker`. The version comes from
+  `git describe`.
+- `--version` prints `gopherdis <version>`; it's set at build time with `-X main.version=...`
+  and works even when other flags would be refused.
+- CI (`.github/workflows/ci.yml`) on every push and pull request: `gofmt` check, `go vet`,
+  `go test -race ./...` and `make build` on Go 1.22; a second job builds the image, runs it with
+  a data folder mounted, sets and reads a key with `redis-cli`, stops the container and checks
+  `dump.gob` landed in the folder.
+- `README.md`: what it is, building and running with and without Docker, all settings, every
+  command, how data is kept safe, limits, the speed table, what isn't supported compared with
+  Redis, development commands, the folder layout and credits.
+- Clean-up: `staticcheck` (all checks except package-comment and naming style) and `go vet` are
+  clean, `gofmt -l` lists nothing, every exported identifier has a doc comment. Removed dead code:
+  `Server.ListenAndServe` (main listens itself since Step 11), `Store.Len` (only a test used it;
+  it now uses `DBSize`) and `Saver.Path` (nothing used it).
+
+Files changed:
+- new: `Dockerfile`, `.dockerignore`, `.github/workflows/ci.yml`
+- `Makefile`, `README.md`, `cmd/gopherdis/{main,config,config_test}.go`, `internal/server/server.go`,
+  `internal/store/snapshot.go`, `internal/persist/{persist,persist_test}.go`, `internal/resp/reader.go`
+
+Tests:
+- Added: `--version` with otherwise-invalid flags; `--help` lists `--version`.
+- Result of `go test -race ./...`: all passing.
+
+Manual checks:
+- `make build && ./bin/gopherdis --version` -> `gopherdis 48be317-dirty` (built before this commit)
+- `make bench` -> SET 75,988 / GET 76,046 req/s; with `-P 16` SET 800,000 / GET 934,579 req/s
+- `make docker` -> image `gopherdis:latest`, 4.96 MB; `docker run --rm gopherdis --version` works
+- `docker run -d -p 6401:6379 -v /tmp/gd-data:/data gopherdis`; `redis-cli -p 6401 SET hello world`
+  -> `OK`, `GET hello` -> `world`; `docker stop` -> logs `shutting down reason="signal terminated"`,
+  `save finished file=/data/dump.gob keys=1`, `shutdown complete`; `/tmp/gd-data/dump.gob` exists;
+  a new container on the same folder -> `GET hello` -> `world`. (Port 6401 because 6379 is taken
+  on this machine; the other containers running here weren't touched.)
+
+"Done when" checklist:
+- [ ] A fresh copy of the repo builds and runs with only the README instructions. (checked after push, below)
+- [ ] CI passes. The Docker image runs and keeps data in `/data`. (image: yes, above; CI: checked after push)
+- [x] Commit: `Step 13: packaging, CI, README`.
+
+Problems / decisions:
+- The runtime image runs as root (distroless `static`, not `static:nonroot`). With the guide's
+  `docker run -v $(pwd)/data:/data`, Docker creates `./data` owned by root if it doesn't exist,
+  and a non-root server couldn't write there. Inside the container root has no extra reach,
+  and the binary is the only file in the image.

@@ -39,16 +39,6 @@ func New(cmds *commands.Table, opts Options) *Server {
 	return &Server{cmds: cmds, opts: opts, conns: make(map[net.Conn]struct{})}
 }
 
-// ListenAndServe listens on addr (for example ":6379") and serves clients
-// until Close is called.
-func (s *Server) ListenAndServe(addr string) error {
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
-	return s.Serve(ln)
-}
-
 // Serve accepts clients on ln until Close is called. Each client gets its
 // own goroutine. Serve returns nil after Close.
 func (s *Server) Serve(ln net.Listener) error {

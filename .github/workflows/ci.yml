@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+      - name: Build
+        run: make build
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t gopherdis .
+
+      - name: Run image and check it answers and saves to /data
+        run: |
+          mkdir -p data
+          docker run -d --name gopherdis -p 6379:6379 -v "$PWD/data:/data" gopherdis
+          sudo apt-get install -y redis-tools > /dev/null
+          for i in $(seq 20); do redis-cli PING && break; sleep 0.5; done
+          redis-cli SET hello world
+          test "$(redis-cli GET hello)" = "world"
+          docker stop gopherdis
+          test -f data/dump.gob

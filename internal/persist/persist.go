@@ -143,11 +143,6 @@ func (s *Saver) LastSave() time.Time {
 	return time.Unix(s.lastSave.Load(), 0)
 }
 
-// Path returns the file the saver writes.
-func (s *Saver) Path() string {
-	return s.path
-}
-
 // Dirty reports whether the store changed since the last good save.
 func (s *Saver) Dirty() bool {
 	return s.store.Changes() != s.savedChanges.Load()

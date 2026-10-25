@@ -39,6 +39,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "gopherdis:", err)
 		os.Exit(2)
 	}
+	if cfg.showVersion {
+		fmt.Println("gopherdis", version)
+		return
+	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: logLevels[cfg.loglevel]})))
 
 	signals := make(chan os.Signal, 1)

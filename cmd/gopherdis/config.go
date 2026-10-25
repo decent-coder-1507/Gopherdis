@@ -27,6 +27,8 @@ type config struct {
 	requirepass  string
 	maxclients   int
 	loglevel     string
+	// showVersion is --version: print the version and exit.
+	showVersion bool
 }
 
 // parseFlags reads the settings from args (without the program name).
@@ -43,6 +45,7 @@ func parseFlags(args []string, output io.Writer) (*config, error) {
 	fs.StringVar(&c.requirepass, "requirepass", "", "password clients must send with AUTH; empty means no password")
 	fs.IntVar(&c.maxclients, "maxclients", 10000, "most clients connected at once")
 	fs.StringVar(&c.loglevel, "loglevel", "info", "log detail: debug, info, warn or error")
+	fs.BoolVar(&c.showVersion, "version", false, "print the version and exit")
 	fs.Usage = func() { printUsage(fs) }
 
 	if err := fs.Parse(args); err != nil {
@@ -50,6 +53,9 @@ func parseFlags(args []string, output io.Writer) (*config, error) {
 	}
 	if fs.NArg() > 0 {
 		return nil, fmt.Errorf("unexpected argument %q (settings are flags, see --help)", fs.Arg(0))
+	}
+	if c.showVersion {
+		return c, nil // nothing else matters
 	}
 	return c, c.validate()
 }
@@ -59,6 +65,10 @@ func printUsage(fs *flag.FlagSet) {
 	out := fs.Output()
 	fmt.Fprintf(out, "Usage: gopherdis [flags]\n\nA small Redis-compatible server.\n\nFlags:\n")
 	fs.VisitAll(func(f *flag.Flag) {
+		if f.Name == "version" {
+			fmt.Fprintf(out, "  --%-14s %s\n", f.Name, f.Usage)
+			return
+		}
 		def := f.DefValue
 		if def == "" {
 			def = `""`

@@ -71,11 +71,3 @@ func (s *Store) Restore(items []Item) int {
 	s.mu.Unlock()
 	return len(data)
 }
-
-// Len returns the number of keys, counting expired keys that haven't been
-// removed yet.
-func (s *Store) Len() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.data)
-}

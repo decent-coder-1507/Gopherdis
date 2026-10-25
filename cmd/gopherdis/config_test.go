@@ -63,6 +63,14 @@ func TestBadFlags(t *testing.T) {
 	}
 }
 
+func TestVersionFlag(t *testing.T) {
+	// --version works even with settings that would otherwise be refused.
+	c, err := parseFlags([]string{"--version", "--dir", "/no/such/folder"}, &bytes.Buffer{})
+	if err != nil || !c.showVersion {
+		t.Fatalf("--version: %+v, %v", c, err)
+	}
+}
+
 func TestHelp(t *testing.T) {
 	var out bytes.Buffer
 	_, err := parseFlags([]string{"--help"}, &out)
@@ -70,7 +78,7 @@ func TestHelp(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 	for _, name := range []string{"--port", "--bind", "--dir", "--dbfilename", "--save-interval",
-		"--requirepass", "--maxclients", "--loglevel"} {
+		"--requirepass", "--maxclients", "--loglevel", "--version"} {
 		if !strings.Contains(out.String(), name) {
 			t.Errorf("help is missing %s:\n%s", name, out.String())
 		}

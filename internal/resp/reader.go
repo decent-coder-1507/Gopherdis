@@ -20,6 +20,7 @@ type ProtocolError struct {
 	Detail string
 }
 
+// Error returns "protocol error: " and the detail.
 func (e *ProtocolError) Error() string { return "protocol error: " + e.Detail }
 
 // Is makes errors.Is(err, ErrProtocol) true.
