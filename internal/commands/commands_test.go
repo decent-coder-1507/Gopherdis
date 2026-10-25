@@ -2,11 +2,13 @@ package commands
 
 import (
 	"bytes"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"gopherdis/internal/persist"
 	"gopherdis/internal/resp"
 	"gopherdis/internal/store"
 )
@@ -198,5 +200,27 @@ func TestPlainSetClearsExpiry(t *testing.T) {
 	now = now.Add(time.Hour)
 	if got := run(t, tbl, "GET k"); got != "$3\r\nnew\r\n" {
 		t.Errorf("got %q", got)
+	}
+}
+
+func TestSaveCommand(t *testing.T) {
+	st := store.New()
+	tbl := NewTable(st)
+	if got := run(t, tbl, "SAVE"); got != "-ERR saving is not configured\r\n" {
+		t.Fatalf("SAVE without saver: %q", got)
+	}
+
+	path := filepath.Join(t.TempDir(), "dump.gob")
+	tbl.SetSaver(persist.NewSaver(path, st))
+	run(t, tbl, "SET a 1")
+	if got := run(t, tbl, "save"); got != "+OK\r\n" {
+		t.Fatalf("SAVE: %q", got)
+	}
+	if got := run(t, tbl, "SAVE now"); got != "-ERR wrong number of arguments for 'save' command\r\n" {
+		t.Fatalf("SAVE now: %q", got)
+	}
+	items, found, err := persist.Load(path)
+	if err != nil || !found || len(items) != 1 || items[0].Key != "a" {
+		t.Fatalf("file after SAVE: %+v, %v, %v", items, found, err)
 	}
 }

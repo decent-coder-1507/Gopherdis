@@ -3,6 +3,7 @@ package commands
 import (
 	"strings"
 
+	"gopherdis/internal/persist"
 	"gopherdis/internal/resp"
 	"gopherdis/internal/store"
 )
@@ -16,6 +17,8 @@ type Context struct {
 	Out *resp.Writer
 	// Store is the database.
 	Store *store.Store
+	// Saver writes the database to disk. It is nil when saving is off.
+	Saver *persist.Saver
 }
 
 // Handler runs one command and writes exactly one reply to ctx.Out.
@@ -34,6 +37,7 @@ type Command struct {
 type Table struct {
 	cmds  map[string]Command
 	store *store.Store
+	saver *persist.Saver
 }
 
 // NewTable returns a table with every built-in command registered,
@@ -52,7 +56,13 @@ func NewTable(st *store.Store) *Table {
 	t.add("DECR", 2, decr)
 	t.add("LPUSH", -3, lpush)
 	t.add("RPUSH", -3, rpush)
+	t.add("SAVE", 1, save)
 	return t
+}
+
+// SetSaver sets the saver used by SAVE. Without one, SAVE replies with an error.
+func (t *Table) SetSaver(s *persist.Saver) {
+	t.saver = s
 }
 
 func (t *Table) add(name string, arity int, h Handler) {
@@ -72,7 +82,7 @@ func (t *Table) Run(args [][]byte, out *resp.Writer) {
 		WrongArgs(out, cmd.Name)
 		return
 	}
-	cmd.Handler(&Context{Args: args, Out: out, Store: t.store})
+	cmd.Handler(&Context{Args: args, Out: out, Store: t.store, Saver: t.saver})
 }
 
 // writeErr writes err as an error reply. Store errors already carry their

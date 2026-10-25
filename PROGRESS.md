@@ -322,3 +322,56 @@ Problems / decisions:
   copies the item slice out while holding the lock (`List.Slice`), so the reply can be
   written after the lock is released. The items' bytes are never changed, so only the slice
   headers are copied.
+
+Commit: 2b2b379 "Step 6: EXISTS, DEL, INCR, DECR, LPUSH, RPUSH"
+
+## Step 7: SAVE and load on start-up
+Status: DONE
+
+What I built:
+- `store.Snapshot()` copies every live key (type, data, expiry) under the read lock and returns.
+  String bytes are shared (they never change in place); list items are copied out.
+  `store.Restore()` replaces the database from a snapshot and skips keys whose expiry has passed.
+- `persist.Save` writes `dump.gob.tmp` with `encoding/gob`, then `Sync()`, `Close()`, and renames
+  it over `dump.gob` (and syncs the directory so the rename itself is on disk). If anything
+  fails, the temp file is removed and the old dump is untouched.
+- The file starts with a small header (`GOPHERDIS-DUMP`, format version 1), so a wrong or
+  future file gets a clear message instead of a confusing decode error.
+- `persist.Saver` ties a store to a path and allows one save at a time. The slow disk write
+  happens after the store lock is released.
+- `SAVE` -> `+OK` (or an error naming what went wrong). `main.go` loads `dump.gob` before it
+  starts listening; a damaged file logs the reason and exits with status 1.
+
+Files changed:
+- `internal/store/snapshot.go`, `internal/persist/persist.go`, `internal/commands/persist.go`,
+  `internal/commands/commands.go`, `cmd/gopherdis/main.go`
+- tests: `internal/persist/persist_test.go`, `internal/store/snapshot_test.go`,
+  `internal/commands/commands_test.go`, `tests/persist_test.go`, `tests/helpers_test.go`
+
+Tests:
+- Added: save then load gives the same keys, types, bytes, list order and expiry times (empty
+  string, binary, list with an empty item); load replaces old data; expired keys (string and list)
+  are skipped; a missing file is fine; six kinds of broken file (garbage, empty, truncated,
+  header only, wrong magic, random bytes) each give an error naming the file and leave the store
+  empty; no temp file is left after three saves; a failed save keeps the old file byte for byte;
+  saving 20 times while another goroutine writes (race detector); snapshot is a real copy;
+  end-to-end: SET/RPUSH/SET EX/binary, SAVE, stop, start a new server on the same file, read back,
+  and a key that expired while the server was down stays gone.
+- Result of `go test -race ./...`: all passing.
+
+Manual checks:
+- `redis-cli SET a 1 ; redis-cli RPUSH l x y ; redis-cli SET t 1 EX 1000` -> `OK`, `2`, `OK`
+- `redis-cli SAVE` -> `OK`; the folder holds only `dump.gob`
+- restart -> log `loaded 3 keys from dump.gob`; `redis-cli GET a` -> `1`; `redis-cli EXISTS l t` -> `2`
+- cut `dump.gob` to 40 bytes and start -> `cannot load saved data: dump.gob is not a valid dump file:
+  unexpected EOF`, exit code 1
+
+"Done when" checklist:
+- [x] Data, lists and expiry times survive a restart.
+- [x] Commit: `Step 7: SAVE and load on start-up`.
+
+Problems / decisions:
+- The dump path is fixed to `dump.gob` in the working directory for now; Step 10 adds
+  `--dir` and `--dbfilename`.
+- gob turns an empty `[]byte` into nil. `Restore` turns it back into an empty value so an
+  empty string still exists after a reload (tested).
