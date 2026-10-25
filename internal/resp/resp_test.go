@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"testing/iotest"
@@ -264,6 +265,93 @@ func FuzzReader(f *testing.F) {
 			}
 			if !reflect.DeepEqual(back, v) {
 				t.Fatalf("round trip changed %#v into %#v", v, back)
+			}
+		}
+	})
+}
+
+func TestReadCommand(t *testing.T) {
+	input := "*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$0\r\n\r\n" + // empty value
+		"*2\r\n$4\r\nECHO\r\n$4\r\na\r\nb\r\n" + // CRLF inside data
+		"*0\r\n" +
+		"*-1\r\n" +
+		"*1\r\n$4\r\nPING\r\n"
+	r := NewReader(bufio.NewReader(iotest.OneByteReader(strings.NewReader(input))))
+	want := [][]string{{"SET", "k", ""}, {"ECHO", "a\r\nb"}, {}, {}, {"PING"}}
+	for i, w := range want {
+		args, err := r.ReadCommand()
+		if err != nil {
+			t.Fatalf("command %d: %v", i, err)
+		}
+		if len(args) != len(w) {
+			t.Fatalf("command %d: %q, want %q", i, args, w)
+		}
+		for j := range w {
+			if string(args[j]) != w[j] {
+				t.Fatalf("command %d part %d: %q, want %q", i, j, args[j], w[j])
+			}
+		}
+	}
+	if _, err := r.ReadCommand(); err != io.EOF {
+		t.Fatalf("after the last command: %v, want io.EOF", err)
+	}
+}
+
+func TestReadCommandPartsDontOverlap(t *testing.T) {
+	// Appending a part must not be able to overwrite the one before it.
+	big := strings.Repeat("y", 3*bulkChunk+7)
+	input := "*3\r\n$1\r\nx\r\n$" + strconv.Itoa(len(big)) + "\r\n" + big + "\r\n$1\r\nz\r\n"
+	args, err := NewReader(bufio.NewReader(strings.NewReader(input))).ReadCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(args[0]) != "x" || string(args[1]) != big || string(args[2]) != "z" {
+		t.Fatalf("parts mixed up: %q / %d bytes / %q", args[0], len(args[1]), args[2])
+	}
+	args[0] = append(args[0], '!') // capacity is capped, so this must copy
+	if string(args[1][:1]) != "y" {
+		t.Fatal("appending to one part changed the next one")
+	}
+}
+
+func TestReadCommandBadInput(t *testing.T) {
+	for _, input := range []string{
+		"+PING\r\n",
+		":1\r\n",
+		"*1\r\n:1\r\n",
+		"*1\r\n$-1\r\n",
+		"*2\r\n*1\r\n$1\r\na\r\n",
+		"*1\r\n$3\r\nabcd\r\n",
+		"*2\r\n$3\r\nGET\r\n",
+		"*1\r\n$99999999999\r\nabc",
+		"*x\r\n",
+	} {
+		_, err := NewReader(bufio.NewReader(strings.NewReader(input))).ReadCommand()
+		if !errors.Is(err, ErrProtocol) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("%q: got %v, want a protocol error or unexpected EOF", input, err)
+		}
+	}
+}
+
+func FuzzReadCommand(f *testing.F) {
+	f.Add([]byte("*2\r\n$3\r\nGET\r\n$1\r\nk\r\n"))
+	f.Add([]byte("*1\r\n$0\r\n\r\n"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		// ReadCommand must agree with the general Read on every valid command.
+		want, werr := NewReader(bufio.NewReader(bytes.NewReader(data))).Read()
+		got, gerr := NewReader(bufio.NewReader(bytes.NewReader(data))).ReadCommand()
+		if gerr != nil {
+			return
+		}
+		if werr != nil {
+			t.Fatalf("ReadCommand accepted %q but Read failed: %v", data, werr)
+		}
+		if len(got) != len(want.Array) {
+			t.Fatalf("%q: %d parts, Read saw %d", data, len(got), len(want.Array))
+		}
+		for i := range got {
+			if !bytes.Equal(got[i], want.Array[i].Bulk) {
+				t.Fatalf("%q part %d: %q vs %q", data, i, got[i], want.Array[i].Bulk)
 			}
 		}
 	})

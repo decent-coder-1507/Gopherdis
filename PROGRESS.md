@@ -375,3 +375,75 @@ Problems / decisions:
   `--dir` and `--dbfilename`.
 - gob turns an empty `[]byte` into nil. `Restore` turns it back into an empty value so an
   empty string still exists after a reload (tested).
+
+Commit: dcf968d "Step 7: SAVE and load on start-up"
+
+## Step 8: Benchmark and performance fixes
+Status: DONE
+
+How I measured:
+- Gopherdis on 6379 and a separate real `redis-server --port 6380 --save ""` (7.2.11), both in the
+  same private network namespace in WSL2 (8 CPUs), so the Redis already running on this machine
+  wasn't involved. `redis-benchmark -p <port> -t set,get -n 100000 -q` (50 clients), 3 runs each,
+  middle value used.
+
+Results after the fixes:
+
+| Test | Real Redis (req/sec) | Gopherdis (req/sec) | Gopherdis as % of Redis |
+|------|---------------------:|--------------------:|------------------------:|
+| SET  | 124,378              | 74,405              | 60%                     |
+| GET  | 131,406              | 70,423              | 54%                     |
+
+Before the fixes: real 126,422 / 122,100, Gopherdis 80,064 / 75,586 (63% / 62%).
+The two sets of numbers are within run-to-run noise of each other (single runs ranged
+from 45k to 86k on our side), so the honest summary is "about 55-65% of real Redis".
+
+What I looked at:
+- Lock held too long: no. Handlers take the store lock only around the map access; replies
+  are written after it's released.
+- Too many small writes: no. Replies go through the `bufio.Writer`, one flush per reply.
+- Allocations: yes. A Go benchmark over real TCP (`internal/server/bench_test.go`, 50 parallel
+  clients) with `-cpuprofile`/`-memprofile` showed every command allocating a `[]resp.Value`, one
+  byte slice per argument, an args slice, a `Context`, and an upper-case copy of the command name.
+
+What I changed:
+- `resp.Reader.ReadCommand`: reads a command straight into a buffer the reader reuses (parts
+  are sliced out of it after the whole command is read, since appending can move the buffer).
+  Buffers over 1 MB aren't kept, so one huge command doesn't pin memory to a connection.
+  The general `Read` is still there for tests and the fuzzer.
+- One `commands.Context` per connection instead of one per command.
+- Command lookup tries the name as sent, then upper-cases it into a 16-byte stack array;
+  neither allocates.
+- Result in the Go benchmark: SET 11 -> 5 allocs/op (637 -> 204 B), GET 6 -> 1 alloc/op
+  (348 -> 59 B), counting the benchmark client's own allocations.
+
+Why we're still slower:
+- The CPU profile is dominated by the read and write syscalls and by goroutine scheduling;
+  our own code (parse + lookup + store) is under 5% of the time. Real Redis runs one thread
+  with epoll and answers without handing work between threads. With Go's netpoller, each
+  request wakes a goroutine, often on another OS thread. Running with `GOMAXPROCS=1` sometimes
+  hit 103k SET / 112k GET but swung down to 41k on other runs, which points at the same cause.
+  I left GOMAXPROCS at Go's default: pinning it to 1 would throw away all other cores, and
+  Step 9's pipelining attacks the real cost (one syscall pair per command).
+
+Files changed:
+- `internal/resp/command.go` (new), `internal/resp/reader.go`, `internal/commands/commands.go`,
+  `internal/server/server.go`
+- tests: `internal/resp/resp_test.go`, `internal/commands/commands_test.go`, `internal/server/bench_test.go`
+
+Tests:
+- Added: `ReadCommand` on 5 commands fed one byte at a time (empty value, CRLF inside data,
+  empty and null arrays), parts never overlapping (a 192 KB part between two 1-byte parts), 9
+  bad inputs, and `FuzzReadCommand`, which checks it agrees with the general `Read` on every
+  input it accepts (20 s, no failures). Benchmarks `BenchmarkSet`, `BenchmarkGet`.
+- Result of `go test -race ./...`: all passing.
+
+"Done when" checklist:
+- [x] The results table is in PROGRESS.md.
+- [x] At least 33% of real Redis speed for SET and GET: 60% and 54%.
+- [x] Commit: `Step 8: benchmark and performance fixes`.
+
+Problems / decisions:
+- Handlers now get argument slices that are only valid during the call (this was already the
+  documented rule). Everything that keeps data (SET, LPUSH, RPUSH) copies it in the store, and
+  keys become Go strings, which copy too.

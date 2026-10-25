@@ -8,7 +8,8 @@ import (
 	"gopherdis/internal/store"
 )
 
-// Context is what a handler gets for one command call.
+// Context is what a handler gets for one command call. The server keeps one
+// Context per connection and reuses it for every command on it.
 type Context struct {
 	// Args holds the whole command, name included: for "ECHO hi" it is
 	// ["ECHO", "hi"]. The slices are only valid during the call.
@@ -69,20 +70,49 @@ func (t *Table) add(name string, arity int, h Handler) {
 	t.cmds[name] = Command{Name: name, Arity: arity, Handler: h}
 }
 
+// NewContext returns the Context for one client connection whose replies
+// go to out.
+func (t *Table) NewContext(out *resp.Writer) *Context {
+	return &Context{Out: out, Store: t.store, Saver: t.saver}
+}
+
 // Run looks up the command named by args[0], checks its argument count
-// and runs it. args must not be empty.
-func (t *Table) Run(args [][]byte, out *resp.Writer) {
-	name := string(args[0])
-	cmd, ok := t.cmds[strings.ToUpper(name)]
+// and runs it with ctx. args must not be empty.
+func (t *Table) Run(ctx *Context, args [][]byte) {
+	cmd, ok := t.lookup(args[0])
 	if !ok {
-		out.WriteError("ERR unknown command '" + name + "'")
+		ctx.Out.WriteError("ERR unknown command '" + string(args[0]) + "'")
 		return
 	}
 	if (cmd.Arity > 0 && len(args) != cmd.Arity) || (cmd.Arity < 0 && len(args) < -cmd.Arity) {
-		WrongArgs(out, cmd.Name)
+		WrongArgs(ctx.Out, cmd.Name)
 		return
 	}
-	cmd.Handler(&Context{Args: args, Out: out, Store: t.store, Saver: t.saver})
+	ctx.Args = args
+	cmd.Handler(ctx)
+	ctx.Args = nil
+}
+
+// lookup finds a command by name, ignoring case, without allocating: this
+// runs for every command, so strings.ToUpper's allocation adds up.
+func (t *Table) lookup(name []byte) (Command, bool) {
+	// Most clients send upper-case names, and string(name) in a map index
+	// doesn't allocate.
+	if cmd, ok := t.cmds[string(name)]; ok {
+		return cmd, true
+	}
+	var upper [16]byte
+	if len(name) > len(upper) {
+		return Command{}, false
+	}
+	for i, c := range name {
+		if 'a' <= c && c <= 'z' {
+			c -= 'a' - 'A'
+		}
+		upper[i] = c
+	}
+	cmd, ok := t.cmds[string(upper[:len(name)])]
+	return cmd, ok
 }
 
 // writeErr writes err as an error reply. Store errors already carry their

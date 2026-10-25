@@ -27,7 +27,7 @@ func runArgs(t *testing.T, tbl *Table, args ...[]byte) string {
 	t.Helper()
 	var buf bytes.Buffer
 	w := resp.NewWriter(&buf)
-	tbl.Run(args, w)
+	tbl.Run(tbl.NewContext(w), args)
 	w.Flush()
 	return buf.String()
 }

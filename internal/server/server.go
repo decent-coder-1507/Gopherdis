@@ -147,37 +147,18 @@ func (s *Server) untrack(c net.Conn) {
 func (s *Server) handle(conn net.Conn) {
 	r := resp.NewReader(bufio.NewReader(conn))
 	w := resp.NewWriter(conn)
+	ctx := s.cmds.NewContext(w)
 	for {
-		v, err := r.Read()
+		args, err := r.ReadCommand()
 		if err != nil {
-			return
-		}
-		args, ok := commandArgs(v)
-		if !ok {
 			return
 		}
 		if len(args) == 0 {
 			continue
 		}
-		s.cmds.Run(args, w)
+		s.cmds.Run(ctx, args)
 		if err := w.Flush(); err != nil {
 			return
 		}
 	}
-}
-
-// commandArgs turns a client message into the command and its arguments.
-// Clients always send an array of bulk strings; anything else is invalid.
-func commandArgs(v resp.Value) ([][]byte, bool) {
-	if v.Type != resp.Array || v.Null {
-		return nil, false
-	}
-	args := make([][]byte, len(v.Array))
-	for i, item := range v.Array {
-		if item.Type != resp.BulkString || item.Null {
-			return nil, false
-		}
-		args[i] = item.Bulk
-	}
-	return args, true
 }

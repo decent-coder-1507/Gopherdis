@@ -26,6 +26,11 @@ const bulkChunk = 64 * 1024
 // Reader reads RESP values from a buffered stream.
 type Reader struct {
 	r *bufio.Reader
+
+	// Reused by ReadCommand so reading a command doesn't allocate.
+	args [][]byte
+	buf  []byte
+	ends []int
 }
 
 // NewReader returns a Reader that reads from r.
