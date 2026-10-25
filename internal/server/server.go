@@ -14,9 +14,18 @@ import (
 	"gopherdis/internal/resp"
 )
 
+// Options are the server's limits. Zero values mean "no limit" for
+// MaxClients and the RESP defaults (512 MB, 1,048,576 parts) for the sizes.
+type Options struct {
+	MaxClients  int
+	MaxBulkLen  int64
+	MaxArrayLen int64
+}
+
 // Server accepts clients and runs their commands against a command table.
 type Server struct {
 	cmds *commands.Table
+	opts Options
 
 	mu     sync.Mutex
 	ln     net.Listener
@@ -26,8 +35,8 @@ type Server struct {
 }
 
 // New returns a server that runs commands from cmds.
-func New(cmds *commands.Table) *Server {
-	return &Server{cmds: cmds, conns: make(map[net.Conn]struct{})}
+func New(cmds *commands.Table, opts Options) *Server {
+	return &Server{cmds: cmds, opts: opts, conns: make(map[net.Conn]struct{})}
 }
 
 // ListenAndServe listens on addr (for example ":6379") and serves clients
@@ -71,9 +80,14 @@ func (s *Server) Serve(ln net.Listener) error {
 		}
 		backoff = 0
 
-		if !s.track(conn) {
+		switch s.track(conn) {
+		case closed:
 			conn.Close()
 			return nil
+		case full:
+			slog.Warn("max number of clients reached; refusing a client", "addr", conn.RemoteAddr().String(), "maxclients", s.opts.MaxClients)
+			go refuse(conn, "ERR max number of clients reached")
+			continue
 		}
 		go func() {
 			defer s.wg.Done()
@@ -81,6 +95,14 @@ func (s *Server) Serve(ln net.Listener) error {
 			s.handle(conn)
 		}()
 	}
+}
+
+// refuse sends one error to a client we won't serve and closes it. A
+// client that doesn't read gets cut off after a second.
+func refuse(conn net.Conn, msg string) {
+	conn.SetWriteDeadline(time.Now().Add(time.Second))
+	io.WriteString(conn, "-"+msg+"\r\n")
+	conn.Close()
 }
 
 func isTemporary(err error) bool {
@@ -169,18 +191,29 @@ func (s *Server) isClosed() bool {
 	return s.closed
 }
 
+type trackResult int
+
+const (
+	accepted trackResult = iota
+	closed
+	full
+)
+
 // track registers a new connection and counts its goroutine in wg. Both
 // happen under mu together with the closed check, so Close can't start
 // waiting between them and miss a goroutine.
-func (s *Server) track(c net.Conn) bool {
+func (s *Server) track(c net.Conn) trackResult {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		return false
+		return closed
+	}
+	if s.opts.MaxClients > 0 && len(s.conns) >= s.opts.MaxClients {
+		return full
 	}
 	s.conns[c] = struct{}{}
 	s.wg.Add(1)
-	return true
+	return accepted
 }
 
 func (s *Server) untrack(c net.Conn) {
@@ -203,13 +236,22 @@ func (s *Server) handle(conn net.Conn) {
 	defer slog.Debug("client disconnected", "addr", addr)
 
 	r := resp.NewReader(bufio.NewReader(conn))
+	r.MaxBulkLen, r.MaxArrayLen = s.opts.MaxBulkLen, s.opts.MaxArrayLen
 	w := resp.NewWriter(conn)
 	ctx := s.cmds.NewContext(w)
 	for {
 		args, err := r.ReadCommand()
 		if err != nil {
-			if errors.Is(err, resp.ErrProtocol) || errors.Is(err, io.ErrUnexpectedEOF) {
+			// Bytes that aren't valid RESP (or too big): tell the client
+			// why, then close only this connection. The rest of what it
+			// sent can't be trusted to line up with commands any more.
+			var perr *resp.ProtocolError
+			if errors.As(err, &perr) {
 				slog.Warn("bad message from client; closing connection", "addr", addr, "err", err)
+				w.WriteError("ERR Protocol error: " + perr.Detail)
+				w.Flush()
+			} else if errors.Is(err, io.ErrUnexpectedEOF) {
+				slog.Debug("client left in the middle of a command", "addr", addr)
 			}
 			return
 		}

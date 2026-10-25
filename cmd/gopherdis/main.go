@@ -84,6 +84,7 @@ func run(cfg *config, signals <-chan os.Signal, ready chan<- string) error {
 		Config:           cfg.params(),
 		ConnectedClients: func() int { return srv.ConnectedClients() },
 		StartTime:        start,
+		Password:         cfg.requirepass,
 		Shutdown: func(save bool) {
 			select {
 			case shutdownRequests <- save:
@@ -91,7 +92,7 @@ func run(cfg *config, signals <-chan os.Signal, ready chan<- string) error {
 			}
 		},
 	})
-	srv = server.New(cmds)
+	srv = server.New(cmds, server.Options{MaxClients: cfg.maxclients})
 
 	stopCleanup := st.StartCleanup()
 	stopAutoSave := func() {}

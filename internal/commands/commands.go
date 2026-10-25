@@ -27,6 +27,8 @@ type Env struct {
 	// Shutdown asks the server to shut down, saving first if save is true.
 	// It must not block. Nil means SHUTDOWN is not available.
 	Shutdown func(save bool)
+	// Password, if not empty, must be sent with AUTH before any other command.
+	Password string
 }
 
 // Param is one setting reported by CONFIG GET.
@@ -51,6 +53,8 @@ type Context struct {
 	CloseConn bool
 
 	table *Table
+	// authenticated is set by a good AUTH; it stays for the connection.
+	authenticated bool
 }
 
 // Handler runs one command and writes exactly one reply to ctx.Out.
@@ -108,6 +112,7 @@ func NewTable(st *store.Store, env Env) *Table {
 	t.add("BGSAVE", 1, bgsave)
 	t.add("LASTSAVE", 1, lastsave)
 	t.add("SHUTDOWN", -1, shutdown)
+	t.add("AUTH", -2, auth)
 	return t
 }
 
@@ -125,6 +130,13 @@ func (t *Table) NewContext(out *resp.Writer) *Context {
 // and runs it with ctx. args must not be empty.
 func (t *Table) Run(ctx *Context, args [][]byte) {
 	cmd, ok := t.lookup(args[0])
+	// With a password set, nothing but AUTH runs before a good AUTH, not
+	// even an unknown command's error, so an unauthenticated client
+	// learns nothing.
+	if t.env.Password != "" && !ctx.authenticated && !(ok && cmd.Name == "AUTH") {
+		ctx.Out.WriteError("NOAUTH Authentication required.")
+		return
+	}
 	if !ok {
 		ctx.Out.WriteError("ERR unknown command '" + string(args[0]) + "'")
 		return

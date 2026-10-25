@@ -9,9 +9,31 @@ import (
 	"strconv"
 )
 
-// ErrProtocol is wrapped by every error caused by bytes that are not valid RESP.
-// Errors from the underlying reader (io.EOF, a closed connection) are returned as they are.
+// ErrProtocol matches (with errors.Is) every error caused by bytes that are
+// not valid RESP. Errors from the underlying reader (io.EOF, a closed
+// connection) are returned as they are.
 var ErrProtocol = errors.New("protocol error")
+
+// ProtocolError is the error returned for bytes that are not valid RESP.
+type ProtocolError struct {
+	// Detail says what was wrong, e.g. "invalid bulk length".
+	Detail string
+}
+
+func (e *ProtocolError) Error() string { return "protocol error: " + e.Detail }
+
+// Is makes errors.Is(err, ErrProtocol) true.
+func (e *ProtocolError) Is(target error) bool { return target == ErrProtocol }
+
+// Default limits, the same as Redis.
+const (
+	// DefaultMaxBulkLen is the longest bulk string accepted: 512 MB.
+	DefaultMaxBulkLen = 512 << 20
+	// DefaultMaxArrayLen is the most parts a command may have.
+	DefaultMaxArrayLen = 1024 * 1024
+	// maxInlineLen is the longest inline command line accepted.
+	maxInlineLen = 64 * 1024
+)
 
 // maxDepth limits how deeply arrays may nest. Clients only ever send flat
 // arrays; the limit stops a stream like "*1\r\n*1\r\n*1\r\n..." from growing
@@ -26,6 +48,11 @@ const bulkChunk = 64 * 1024
 // Reader reads RESP values from a buffered stream.
 type Reader struct {
 	r *bufio.Reader
+
+	// MaxBulkLen and MaxArrayLen are checked against the length in a header
+	// before any data is read. Zero means the default.
+	MaxBulkLen  int64
+	MaxArrayLen int64
 
 	// Reused by ReadCommand so reading a command doesn't allocate.
 	args [][]byte
@@ -45,7 +72,21 @@ func (r *Reader) Buffered() int {
 }
 
 func protoErr(format string, args ...any) error {
-	return fmt.Errorf("%w: %s", ErrProtocol, fmt.Sprintf(format, args...))
+	return &ProtocolError{Detail: fmt.Sprintf(format, args...)}
+}
+
+func (r *Reader) maxBulk() int64 {
+	if r.MaxBulkLen > 0 {
+		return r.MaxBulkLen
+	}
+	return DefaultMaxBulkLen
+}
+
+func (r *Reader) maxArray() int64 {
+	if r.MaxArrayLen > 0 {
+		return r.MaxArrayLen
+	}
+	return DefaultMaxArrayLen
 }
 
 // Read reads exactly one complete value. TCP delivers a byte stream, so the
@@ -136,6 +177,9 @@ func (r *Reader) readBulk() (Value, error) {
 	if n == -1 {
 		return NullValue(), nil
 	}
+	if n > r.maxBulk() {
+		return Value{}, protoErr("invalid bulk length")
+	}
 
 	// Read exactly n bytes using the length. The data may itself contain
 	// "\r\n", so we never scan it for a terminator.
@@ -167,6 +211,9 @@ func (r *Reader) readArray(depth int) (Value, error) {
 	}
 	if n == -1 {
 		return NullArrayValue(), nil
+	}
+	if n > r.maxArray() {
+		return Value{}, protoErr("invalid multibulk length")
 	}
 	// Like bulk strings, don't trust the header for the allocation size.
 	vals := make([]Value, 0, min(n, 1024))

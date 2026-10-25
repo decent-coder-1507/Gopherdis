@@ -32,6 +32,28 @@ func runArgs(t *testing.T, tbl *Table, args ...[]byte) string {
 	return buf.String()
 }
 
+// conn is one simulated client connection, for tests where state that
+// lives with the connection (like AUTH) matters.
+type conn struct {
+	tbl *Table
+	buf *bytes.Buffer
+	w   *resp.Writer
+}
+
+func newConn(tbl *Table) (*Context, *conn) {
+	c := &conn{tbl: tbl, buf: &bytes.Buffer{}}
+	c.w = resp.NewWriter(c.buf)
+	return tbl.NewContext(c.w), c
+}
+
+// run runs one command line on this connection and returns the reply.
+func (c *conn) run(ctx *Context, line string) string {
+	c.buf.Reset()
+	c.tbl.Run(ctx, splitArgs(line))
+	c.w.Flush()
+	return c.buf.String()
+}
+
 func TestPingEchoCommand(t *testing.T) {
 	tbl := NewTable(store.New(), Env{})
 	tests := []struct{ in, want string }{

@@ -18,6 +18,10 @@ import (
 type options struct {
 	// dumpPath turns on saving to this file and loads it at start, like main does.
 	dumpPath string
+	// password is the server's requirepass.
+	password string
+	// server holds the limits.
+	server server.Options
 }
 
 // startServer runs a server on a free local port and returns its address.
@@ -38,6 +42,7 @@ func startServerWith(t *testing.T, opts options) (addr string, stop func()) {
 		Version:          "test",
 		Config:           []commands.Param{{Name: "port", Value: "0"}},
 		ConnectedClients: func() int { return srv.ConnectedClients() },
+		Password:         opts.password,
 	}
 	if opts.dumpPath != "" {
 		env.Saver = persist.NewSaver(opts.dumpPath, st)
@@ -51,7 +56,7 @@ func startServerWith(t *testing.T, opts options) (addr string, stop func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv = server.New(cmds)
+	srv = server.New(cmds, opts.server)
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
 	stopped := false

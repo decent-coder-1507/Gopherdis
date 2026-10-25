@@ -643,3 +643,77 @@ Problems / decisions:
   clients. Exit code 1 makes a supervisor (systemd, Docker) notice.
 - On Windows only Ctrl+C can be caught; SIGTERM isn't something Windows sends. The process test
   skips itself there. Everything here was tested on Linux (WSL).
+
+Commit: f097207 "Step 11: graceful shutdown and auto-save"
+
+## Step 12: Limits, AUTH, inline commands
+Status: DONE
+
+What I built:
+- Max clients: when `--maxclients` clients are connected, a new one gets
+  `-ERR max number of clients reached` and is closed (with a 1 s write deadline, in its own
+  goroutine, so a client that doesn't read can't stall the accept loop). Logged as a warning.
+- Size limits, checked from the header before any data is read: bulk strings over 512 MB
+  (`-ERR Protocol error: invalid bulk length`) and commands with more than 1,048,576 parts
+  (`-ERR Protocol error: invalid multibulk length`). Both close the connection. The limits live
+  on `resp.Reader` and come in through `server.Options`, so tests use small ones.
+- Bad protocol: any `resp.ProtocolError` is answered with `-ERR Protocol error: <what was wrong>`,
+  then that connection is closed. Others are unaffected.
+- Inline commands: a message that doesn't start with `*` is one line of words separated by
+  spaces or tabs, ending in `\n` (a `\r` before it is dropped), up to 64 KB, as in Redis. Blank lines
+  are skipped. `printf 'PING\r\n' | nc localhost 6379` gets `+PONG`.
+- Password: with `--requirepass`, every command except AUTH gets `-NOAUTH Authentication required.`
+  until a good AUTH on that connection, even unknown commands, so an unauthenticated client can't
+  probe anything. `AUTH password` and `AUTH default password` (what `redis-cli --user` and
+  go-redis with a username send). Wrong: `-WRONGPASS invalid username-password pair or user is disabled.`
+  No password set: the Redis "called without any password configured" error.
+- The comparison hashes both sides with SHA-256 and compares the hashes with
+  `crypto/subtle.ConstantTimeCompare`. Comparing the raw strings would return early when the
+  lengths differ and leak the password's length.
+
+Files changed:
+- `internal/resp/reader.go` (`ProtocolError`, limits), `internal/resp/command.go` (limits, inline),
+  `internal/server/server.go` (`Options`, max clients, protocol error reply),
+  `internal/commands/{auth,commands}.go`, `cmd/gopherdis/main.go`
+- tests: `internal/resp/resp_test.go`, `internal/server/limits_test.go`, `internal/server/server_test.go`,
+  `internal/commands/auth_test.go`, `internal/commands/commands_test.go`, `tests/auth_test.go`, `tests/helpers_test.go`
+
+Tests:
+- Added: limits at and over the edge with small values (header-only, so no data is waited for) and at
+  the 512 MB / 1,048,576 defaults; inline commands (spaces, tabs, `\n` only, blank line, any first
+  byte, RESP after inline, a 64 KB line spanning many buffer fills, too long); max clients 2 with the
+  exact reply for the third and room again after one leaves; NOAUTH for known, unknown and CONFIG
+  commands, WRONGPASS for wrong, prefix, longer and wrong-case passwords and for another user, good AUTH,
+  AUTH being per connection, a later failed AUTH not logging out; go-redis with no, wrong and right
+  password and with username "default"; 50 clients each sending 200 random chunks (some starting like
+  real RESP), then the server still answers PING.
+- Changed (the protocol changed, nothing was weakened): `+PING` and `:1` were "bad input" cases in
+  Step 8's `ReadCommand` test but are inline commands now, so they moved to the inline test; the garbage
+  client in a Step 2 test now sends `*abc` and checks for the new `-ERR Protocol error` reply before the
+  close; the 1 TB bulk header test now expects the 512 MB limit and checks the "no up-front allocation"
+  rule with a 500 MB header instead. `FuzzReadCommand` (30 s, no failures) compares with `Read` for
+  RESP input and checks inline input doesn't panic.
+- Result of `go test -race ./...`: all passing.
+
+Manual checks (port 6400):
+- `gopherdis --requirepass secret123`: `redis-cli GET a` -> `NOAUTH Authentication required.`
+- `redis-cli -a secret123 SET a 1` -> `OK`; `redis-cli -a wrong GET a` -> `AUTH failed: WRONGPASS ...`
+- `redis-cli --user default --pass secret123 GET a` -> `1`
+- `printf 'PING\r\n' | nc localhost 6400` -> `+PONG`
+- `--maxclients 2`, two idle `nc` clients, then `redis-cli PING` -> `ERR max number of clients reached`
+- 20 x 150 KB of `/dev/urandom` into the port -> server still answers `PONG`; the log shows 18
+  `bad message` warnings (protocol errors) and exit code 0 on Ctrl+C
+
+"Done when" checklist:
+- [x] All limits and password rules work and are tested.
+- [x] Sending random garbage bytes never crashes the server.
+- [x] Commit: `Step 12: limits, AUTH, inline commands`.
+
+Problems / decisions:
+- Inline commands split on whitespace only, as the guide says. Real Redis also understands
+  quotes in inline commands (`SET k "a b"`); that isn't supported.
+- The error detail after `ERR Protocol error:` (e.g. `invalid bulk length`) follows Redis' wording,
+  so the reply starts exactly as the guide's table says and still tells the client what went wrong.
+- With go-redis, a refused (max clients) client may see "broken pipe" instead of the error text,
+  because the library writes its handshake before reading and the server has already closed. Real
+  Redis behaves the same way. The exact bytes are tested over raw TCP.

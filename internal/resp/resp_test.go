@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -182,11 +183,27 @@ func TestEOFBetweenMessages(t *testing.T) {
 }
 
 func TestHugeBulkHeaderDoesNotAllocate(t *testing.T) {
-	// A header that claims ~1 TB but sends almost nothing must fail
-	// quickly instead of trying to allocate the whole size.
+	// A header that claims 500 MB (under the limit) but sends almost
+	// nothing must fail quickly instead of allocating the whole size.
+	for _, read := range []func(*Reader) error{
+		func(r *Reader) error { _, err := r.Read(); return err },
+		func(r *Reader) error { _, err := r.ReadCommand(); return err },
+	} {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		err := read(NewReader(bufio.NewReader(strings.NewReader("*1\r\n$500000000\r\nabc"))))
+		runtime.ReadMemStats(&after)
+		if !errors.Is(err, io.ErrUnexpectedEOF) {
+			t.Errorf("got %v, want io.ErrUnexpectedEOF", err)
+		}
+		if grew := after.TotalAlloc - before.TotalAlloc; grew > 10<<20 {
+			t.Errorf("allocated %d MB for 3 bytes of data", grew>>20)
+		}
+	}
+	// Over the 512 MB limit the header alone is refused.
 	_, err := NewReader(bufio.NewReader(strings.NewReader("$999999999999\r\nabc"))).Read()
-	if !errors.Is(err, io.ErrUnexpectedEOF) {
-		t.Errorf("got %v, want io.ErrUnexpectedEOF", err)
+	if !errors.Is(err, ErrProtocol) {
+		t.Errorf("1 TB header: got %v, want a protocol error", err)
 	}
 }
 
@@ -315,9 +332,9 @@ func TestReadCommandPartsDontOverlap(t *testing.T) {
 }
 
 func TestReadCommandBadInput(t *testing.T) {
+	// (A line that doesn't start with '*' is an inline command since Step 12;
+	// see TestReadCommandInline.)
 	for _, input := range []string{
-		"+PING\r\n",
-		":1\r\n",
 		"*1\r\n:1\r\n",
 		"*1\r\n$-1\r\n",
 		"*2\r\n*1\r\n$1\r\na\r\n",
@@ -337,7 +354,12 @@ func FuzzReadCommand(f *testing.F) {
 	f.Add([]byte("*2\r\n$3\r\nGET\r\n$1\r\nk\r\n"))
 	f.Add([]byte("*1\r\n$0\r\n\r\n"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		// ReadCommand must agree with the general Read on every valid command.
+		// ReadCommand must agree with the general Read on every valid
+		// command. Inline commands are ReadCommand's alone.
+		if len(data) == 0 || data[0] != '*' {
+			NewReader(bufio.NewReader(bytes.NewReader(data))).ReadCommand() // must not panic
+			return
+		}
 		want, werr := NewReader(bufio.NewReader(bytes.NewReader(data))).Read()
 		got, gerr := NewReader(bufio.NewReader(bytes.NewReader(data))).ReadCommand()
 		if gerr != nil {
@@ -355,4 +377,83 @@ func FuzzReadCommand(f *testing.F) {
 			}
 		}
 	})
+}
+
+func TestReadCommandInline(t *testing.T) {
+	input := "PING\r\n" +
+		"SET  name\tSrijoy\n" + // several spaces, a tab, no \r
+		"\r\n" + // blank line: no parts
+		"+PING\r\n" + // any first byte but '*' starts an inline command
+		"*1\r\n$4\r\nPING\r\n" // RESP still works after inline
+	r := NewReader(bufio.NewReader(strings.NewReader(input)))
+	want := [][]string{{"PING"}, {"SET", "name", "Srijoy"}, {}, {"+PING"}, {"PING"}}
+	for i, w := range want {
+		args, err := r.ReadCommand()
+		if err != nil {
+			t.Fatalf("command %d: %v", i, err)
+		}
+		if len(args) != len(w) {
+			t.Fatalf("command %d: %q, want %q", i, args, w)
+		}
+		for j := range w {
+			if string(args[j]) != w[j] {
+				t.Fatalf("command %d part %d: %q, want %q", i, j, args[j], w[j])
+			}
+		}
+	}
+}
+
+func TestReadCommandInlineTooLong(t *testing.T) {
+	line := "SET k " + strings.Repeat("v", maxInlineLen) + "\r\n"
+	_, err := NewReader(bufio.NewReader(strings.NewReader(line))).ReadCommand()
+	if !errors.Is(err, ErrProtocol) {
+		t.Fatalf("got %v, want a protocol error", err)
+	}
+	// Just under the limit is fine, though it spans many buffer fills.
+	line = "SET k " + strings.Repeat("v", maxInlineLen-20) + "\r\n"
+	args, err := NewReader(bufio.NewReader(strings.NewReader(line))).ReadCommand()
+	if err != nil || len(args) != 3 || len(args[2]) != maxInlineLen-20 {
+		t.Fatalf("long inline line: %d parts, %v", len(args), err)
+	}
+}
+
+func TestLimits(t *testing.T) {
+	newReader := func(s string) *Reader {
+		r := NewReader(bufio.NewReader(strings.NewReader(s)))
+		r.MaxBulkLen, r.MaxArrayLen = 10, 3
+		return r
+	}
+	wantDetail := func(name string, err error, detail string) {
+		t.Helper()
+		var perr *ProtocolError
+		if !errors.As(err, &perr) || perr.Detail != detail {
+			t.Errorf("%s: %v, want %q", name, err, detail)
+		}
+	}
+	// The limits are checked from the header alone: no data follows these.
+	_, err := newReader("*1\r\n$11\r\n").ReadCommand()
+	wantDetail("ReadCommand, 11-byte bulk", err, "invalid bulk length")
+	_, err = newReader("$11\r\n").Read()
+	wantDetail("Read, 11-byte bulk", err, "invalid bulk length")
+	_, err = newReader("*4\r\n").ReadCommand()
+	wantDetail("ReadCommand, 4 parts", err, "invalid multibulk length")
+	_, err = newReader("*4\r\n").Read()
+	wantDetail("Read, 4 items", err, "invalid multibulk length")
+
+	// At the limits is fine.
+	args, err := newReader("*3\r\n$10\r\n0123456789\r\n$0\r\n\r\n$1\r\nx\r\n").ReadCommand()
+	if err != nil || len(args) != 3 {
+		t.Fatalf("at the limits: %q, %v", args, err)
+	}
+}
+
+func TestDefaultLimits(t *testing.T) {
+	r := NewReader(bufio.NewReader(strings.NewReader("*1\r\n$536870913\r\n")))
+	if _, err := r.ReadCommand(); !errors.Is(err, ErrProtocol) {
+		t.Errorf("512 MB + 1 bulk: %v", err)
+	}
+	r = NewReader(bufio.NewReader(strings.NewReader("*1048577\r\n")))
+	if _, err := r.ReadCommand(); !errors.Is(err, ErrProtocol) {
+		t.Errorf("1,048,577 parts: %v", err)
+	}
 }

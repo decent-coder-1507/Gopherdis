@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -18,7 +19,7 @@ func startServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(commands.NewTable(store.New(), commands.Env{}))
+	srv := New(commands.NewTable(store.New(), commands.Env{}), Options{})
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
 	t.Cleanup(func() {
@@ -89,15 +90,15 @@ func TestBrokenClientDoesNotStopServer(t *testing.T) {
 
 	// One client sends garbage, another leaves in the middle of a command.
 	bad, _ := dial(t, srv)
-	io.WriteString(bad, "?garbage\r\n")
+	io.WriteString(bad, "*abc\r\n")
 	half, _ := dial(t, srv)
 	io.WriteString(half, "*2\r\n$4\r\nECHO\r\n$10\r\nabc")
 	half.Close()
 
-	// The garbage client is disconnected...
-	buf := make([]byte, 1)
-	if _, err := bad.Read(buf); err == nil {
-		t.Errorf("expected the garbage client to be disconnected")
+	// The garbage client is told why and disconnected...
+	got, _ := io.ReadAll(bad)
+	if !strings.HasPrefix(string(got), "-ERR Protocol error") || !strings.HasSuffix(string(got), "\r\n") {
+		t.Errorf("garbage client got %q, want a protocol error and then EOF", got)
 	}
 	// ...and everyone else is still served.
 	c, r := dial(t, srv)
@@ -173,7 +174,7 @@ func TestShutdownFinishesSentCommands(t *testing.T) {
 func TestShutdownCommandClosesConnection(t *testing.T) {
 	ln, _ := net.Listen("tcp", "127.0.0.1:0")
 	requested := make(chan bool, 1)
-	srv := New(commands.NewTable(store.New(), commands.Env{Shutdown: func(save bool) { requested <- save }}))
+	srv := New(commands.NewTable(store.New(), commands.Env{Shutdown: func(save bool) { requested <- save }}), Options{})
 	go srv.Serve(ln)
 	defer srv.Close()
 
