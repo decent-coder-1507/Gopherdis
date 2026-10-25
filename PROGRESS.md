@@ -82,3 +82,52 @@ Problems / decisions:
   a bulk string bigger than 64 KB grows as its bytes actually arrive instead of being
   allocated from the header; header lines longer than the 4 KB read buffer are rejected.
 - Lengths are parsed strictly: digits only, or exactly `-1`. `$+3` and `$-2` are errors.
+
+Commit: fac8bcb "Step 1: RESP parser and serializer"
+
+## Step 2: TCP server, PING and ECHO
+Status: DONE
+
+What I built:
+- `server.Server`: listens on TCP, one goroutine per client running read → run → reply → flush.
+  A client that disconnects or sends something unparseable only ends its own goroutine.
+  `Serve(ln)` takes a listener so tests can use a free port; `Close()` stops accepting,
+  closes open connections and waits for client goroutines. Temporary accept errors
+  (e.g. too many open files) are retried with a short backoff.
+- `commands.Table`: a map from upper-case name to handler plus arity (Redis style: the name
+  counts, negative means "at least"). The table checks the argument count, so handlers don't.
+- `PING`, `PING msg`, `ECHO msg`, `COMMAND [anything]` (empty array), and the standard
+  unknown-command and wrong-argument-count errors.
+- `main.go` listens on `:6379`.
+
+Files changed:
+- `cmd/gopherdis/main.go`, `internal/commands/commands.go`, `internal/server/server.go`
+- tests: `internal/commands/commands_test.go`, `internal/server/server_test.go`,
+  `tests/helpers_test.go`, `tests/basic_test.go`
+- `go.mod`, `go.sum`: go-redis v9.18.0 (tests only)
+
+Tests:
+- Added: 16 command cases (case-insensitivity, errors, binary ECHO); raw-TCP server tests
+  (unknown command keeps the connection open, a command split across 4 writes, a garbage
+  client and a client leaving mid-command don't affect others, Close disconnects clients);
+  go-redis end-to-end tests for PING, ECHO, unknown command, wrong arg count, COMMAND DOCS.
+- Result of `go test -race ./...`: all passing.
+
+Manual checks (in a private network namespace, so 6379 is free):
+- `redis-cli PING` -> `PONG`
+- `redis-cli ECHO "Hello World"` -> `Hello World`
+- `redis-cli FOO` -> `ERR unknown command 'FOO'`
+- `redis-cli` interactive -> prompt `127.0.0.1:6379>`, `PING` -> `PONG`, `ECHO hi` -> `"hi"`
+
+"Done when" checklist:
+- [x] All commands above work with the real `redis-cli`, including interactive mode.
+- [x] The automated end-to-end test passes.
+- [x] Commit: `Step 2: TCP server, PING and ECHO`.
+
+Problems / decisions:
+- go-redis is pinned to v9.18.0: it is the newest release that still builds with Go 1.22
+  (v9.19+ needs Go 1.24, v9.23 needs 1.26).
+- go-redis sends `HELLO 3` and `CLIENT SETINFO` on connect. We answer them with
+  unknown-command errors and it falls back to RESP2, so no special handling is needed.
+- A message that isn't an array of bulk strings closes the connection for now.
+  Step 12 adds the `-ERR Protocol error` reply and inline commands.
