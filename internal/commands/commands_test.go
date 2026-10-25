@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"gopherdis/internal/resp"
+	"gopherdis/internal/store"
 )
 
 // run executes one command line (split on spaces) and returns the raw reply.
@@ -28,7 +29,7 @@ func runArgs(t *testing.T, tbl *Table, args ...[]byte) string {
 }
 
 func TestPingEchoCommand(t *testing.T) {
-	tbl := NewTable()
+	tbl := NewTable(store.New())
 	tests := []struct{ in, want string }{
 		{"PING", "+PONG\r\n"},
 		{"ping", "+PONG\r\n"},
@@ -54,8 +55,42 @@ func TestPingEchoCommand(t *testing.T) {
 
 func TestEchoKeepsBytes(t *testing.T) {
 	msg := []byte("Hello World\r\n\x00")
-	got := runArgs(t, NewTable(), []byte("ECHO"), msg)
+	got := runArgs(t, NewTable(store.New()), []byte("ECHO"), msg)
 	if want := "$14\r\nHello World\r\n\x00\r\n"; got != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestSetGet(t *testing.T) {
+	tbl := NewTable(store.New())
+	tests := []struct{ in, want string }{
+		{"GET name", "$-1\r\n"},
+		{"SET name Srijoy", "+OK\r\n"},
+		{"GET name", "$6\r\nSrijoy\r\n"},
+		{"set name Paul", "+OK\r\n"},
+		{"get name", "$4\r\nPaul\r\n"},
+		{"GET nothing", "$-1\r\n"},
+		{"SET", "-ERR wrong number of arguments for 'set' command\r\n"},
+		{"SET k", "-ERR wrong number of arguments for 'set' command\r\n"},
+		{"SET k v junk", "-ERR syntax error\r\n"},
+		{"GET", "-ERR wrong number of arguments for 'get' command\r\n"},
+		{"GET a b", "-ERR wrong number of arguments for 'get' command\r\n"},
+	}
+	for _, tc := range tests {
+		if got := run(t, tbl, tc.in); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestSetGetEmptyAndBinary(t *testing.T) {
+	tbl := NewTable(store.New())
+	runArgs(t, tbl, []byte("SET"), []byte("e"), []byte{})
+	if got := run(t, tbl, "GET e"); got != "$0\r\n\r\n" {
+		t.Errorf("empty value: got %q", got)
+	}
+	runArgs(t, tbl, []byte("SET"), []byte("b"), []byte("\x00\r\n\xff"))
+	if got := run(t, tbl, "GET b"); got != "$4\r\n\x00\r\n\xff\r\n" {
+		t.Errorf("binary value: got %q", got)
 	}
 }

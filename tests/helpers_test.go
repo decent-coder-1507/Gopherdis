@@ -10,6 +10,7 @@ import (
 
 	"gopherdis/internal/commands"
 	"gopherdis/internal/server"
+	"gopherdis/internal/store"
 )
 
 // startServer runs a server on a free local port and returns its address.
@@ -20,7 +21,7 @@ func startServer(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := server.New(commands.NewTable())
+	srv := server.New(commands.NewTable(store.New()))
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
 	t.Cleanup(func() {

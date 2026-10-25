@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"gopherdis/internal/resp"
+	"gopherdis/internal/store"
 )
 
 // Context is what a handler gets for one command call.
@@ -13,6 +14,8 @@ type Context struct {
 	Args [][]byte
 	// Out is where the handler writes its reply. The caller flushes it.
 	Out *resp.Writer
+	// Store is the database.
+	Store *store.Store
 }
 
 // Handler runs one command and writes exactly one reply to ctx.Out.
@@ -29,15 +32,19 @@ type Command struct {
 
 // Table maps upper-case command names to commands.
 type Table struct {
-	cmds map[string]Command
+	cmds  map[string]Command
+	store *store.Store
 }
 
-// NewTable returns a table with every built-in command registered.
-func NewTable() *Table {
-	t := &Table{cmds: make(map[string]Command)}
+// NewTable returns a table with every built-in command registered,
+// working on st.
+func NewTable(st *store.Store) *Table {
+	t := &Table{cmds: make(map[string]Command), store: st}
 	t.add("PING", -1, ping)
 	t.add("ECHO", 2, echo)
 	t.add("COMMAND", -1, command)
+	t.add("SET", -3, set)
+	t.add("GET", 2, get)
 	return t
 }
 
@@ -58,7 +65,13 @@ func (t *Table) Run(args [][]byte, out *resp.Writer) {
 		WrongArgs(out, cmd.Name)
 		return
 	}
-	cmd.Handler(&Context{Args: args, Out: out})
+	cmd.Handler(&Context{Args: args, Out: out, Store: t.store})
+}
+
+// writeErr writes err as an error reply. Store errors already carry their
+// prefix (ERR, WRONGTYPE, ...).
+func writeErr(out *resp.Writer, err error) {
+	out.WriteError(err.Error())
 }
 
 // WrongArgs writes the standard wrong-number-of-arguments error.

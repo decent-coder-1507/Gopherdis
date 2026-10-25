@@ -131,3 +131,45 @@ Problems / decisions:
   unknown-command errors and it falls back to RESP2, so no special handling is needed.
 - A message that isn't an array of bulk strings closes the connection for now.
   Step 12 adds the `-ERR Protocol error` reply and inline commands.
+
+Commit: f6c15ff "Step 2: TCP server, PING and ECHO"
+
+## Step 3: SET and GET
+Status: DONE
+
+What I built:
+- `store.Store`: a map from key to `*Entry`. `Entry` already has everything later steps need:
+  `Kind` (string or list), `Str`, `List` and `ExpireAt` (zero = no expiry).
+- Values are `[]byte` and `Set` stores a copy, so binary data is kept exactly and the store
+  never shares memory with a network buffer. Stored slices are never changed in place, so a
+  reply can be written from a slice after the store has moved on.
+- `SET key value` -> `+OK`; `GET key` -> bulk string or `$-1`. `GET` on a list key returns the
+  WRONGTYPE error (no lists exist yet, but the check is in place and tested).
+- `commands.NewTable` now takes the store; handlers get it through `Context.Store`.
+
+Files changed:
+- `internal/store/store.go`, `internal/commands/strings.go`, `internal/commands/commands.go`,
+  `cmd/gopherdis/main.go`
+- tests: `internal/store/store_test.go`, `internal/commands/commands_test.go`,
+  `tests/strings_test.go`, helper updates in `tests/helpers_test.go` and `internal/server/server_test.go`
+
+Tests:
+- Added: 4 store tests (set/get/overwrite/missing, empty and binary, Set copies its input,
+  wrong type), 13 command cases, 3 go-redis tests (overwrite, missing key, empty value,
+  value with spaces, binary bytes, CRLF inside a value, wrong argument counts).
+- Result of `go test -race ./...`: all passing.
+
+Manual checks:
+- `redis-cli SET name Srijoy` -> `OK`
+- `redis-cli GET name` -> `Srijoy`
+- `redis-cli GET nothing` -> (nil; redis-cli prints an empty line when not on a terminal)
+- `redis-cli SET name Paul` -> `OK`, then `GET name` -> `Paul`
+- `redis-cli SET "with space" "a b c"` then `GET "with space"` -> `a b c`
+
+"Done when" checklist:
+- [x] SET and GET work in `redis-cli` and in tests.
+- [x] Commit: `Step 3: SET and GET`.
+
+Problems / decisions:
+- `SET k v extra` replies `-ERR syntax error`, as real Redis does for an unknown option.
+  Step 5 turns the extra arguments into the EX/PX/EXAT/PXAT options.

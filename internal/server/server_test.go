@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"gopherdis/internal/commands"
+	"gopherdis/internal/store"
 )
 
 func startServer(t *testing.T) *Server {
@@ -16,7 +17,7 @@ func startServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(commands.NewTable())
+	srv := New(commands.NewTable(store.New()))
 	done := make(chan error, 1)
 	go func() { done <- srv.Serve(ln) }()
 	t.Cleanup(func() {
