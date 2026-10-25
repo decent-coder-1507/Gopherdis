@@ -41,4 +41,44 @@ Problems / decisions:
   (Step 10), I run manual checks inside a private network namespace (`unshare -n`), where
   6379 is free; after that I use `--port 6400`.
 
-Commit: "Step 0: project setup"
+Commit: 44a5760 "Step 0: project setup"
+
+## Step 1: RESP parser and serializer
+Status: DONE
+
+What I built:
+- `resp.Value`, one struct for all five RESP2 types plus the nil bulk string and nil array,
+  with small constructors (`BulkValue`, `NullValue`, `ArrayValue`, ...).
+- `resp.Reader`: reads exactly one value from a `bufio.Reader`. Bulk strings are read by
+  their length, never by looking for `\r\n`, so binary data with CRLF inside is safe.
+- `resp.Writer`: `WriteSimple`, `WriteError`, `WriteInteger`, `WriteBulk`, `WriteBulkString`,
+  `WriteNull`, `WriteNullArray`, `WriteArray` (header) and `WriteValue` (any value).
+  It buffers through a `bufio.Writer`; nothing is sent until `Flush`.
+- All bad input comes back as an error wrapping `resp.ErrProtocol`, or `io.ErrUnexpectedEOF`
+  when the stream ends mid-message. A clean `io.EOF` only happens between messages, so the
+  server can tell a normal disconnect from a broken one.
+
+Files changed:
+- `internal/resp/value.go`, `reader.go`, `writer.go`, `resp_test.go`
+
+Tests:
+- Added: 14 parse cases, 10 serialize cases, 11 round trips, 21 bad-input cases, split reads
+  (one byte per read and a pipe with 3-byte writes), several messages in one read, EOF between
+  messages, a huge-length header, and a fuzz test (`FuzzReader`).
+- Result of `go test -race ./...`: all passing. `go test -fuzz=FuzzReader -fuzztime=30s`
+  ran about 1.9 million inputs with no crash.
+
+Manual checks:
+- none needed; no networking in this step.
+
+"Done when" checklist:
+- [x] All the tests above exist and pass.
+- [x] Bad input returns errors and never panics.
+- [x] Commit: `Step 1: RESP parser and serializer`.
+
+Problems / decisions:
+- Three guards so bad input can't crash or exhaust the process, even before Step 12's limits:
+  arrays may nest at most 32 deep (deep nesting would grow the stack without end);
+  a bulk string bigger than 64 KB grows as its bytes actually arrive instead of being
+  allocated from the header; header lines longer than the 4 KB read buffer are rejected.
+- Lengths are parsed strictly: digits only, or exactly `-1`. `$+3` and `$-2` are errors.
